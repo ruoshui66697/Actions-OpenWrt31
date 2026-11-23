@@ -149,7 +149,7 @@ jobs:
         head -5 "$GITHUB_WORKSPACE/mars-a31s.config"
 
     - name: Upload .config artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: openwrt-dotconfig
         path: mars-a31s.config
