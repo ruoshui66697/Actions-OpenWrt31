@@ -1,0 +1,325 @@
+/*
+ * sun6i-a31s-mars-a31s.dts
+ *
+ * 目标设备：MARS A31s 电视盒子（全志 A31s + 1GB DDR3 + 8GB NAND）
+ * 移植目标：OpenWrt（Linux 主线内核）
+ *
+ * 硬件确认记录（2026-11-23 通过 TTL 串口 + 安卓 shell 实测）：
+ *   - WiFi 芯片：Realtek RTL8188EU，USB 总线挂载
+ *                 实测 DRIVER=rtl8188eu，PRODUCT=0BDA:0179
+ *                 走 USB 自动枚举，本文件无需为其编写节点
+ *   - 网口 PHY：MDIO 总线地址 = 0x01
+ *                 安卓侧驱动显示 "Generic PHY"，即标准 Clause 22 设备
+ *                 推断型号 RTL8201F 系列（A31 平台主流选型）
+ *   - 存储：NAND，11 个分区，分区表取自 U-Boot 启动日志
+ *
+ * 编译方式：
+ *   放入 arch/arm/boot/dts/ 目录
+ *   make ARCH=arm sun6i-a31s-mars-a31s.dtb
+ */
+
+/dts-v1/;
+
+#include "sun6i-a31.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+    /* 板级标识，格式固定为"厂商,型号"，内核会用它匹配 .dtb */
+    model = "MARS A31s TV Box";
+    compatible = "allwinner,sun6i-a31s", "allwinner,sun6i-a31";
+
+    /*
+     * 内存节点
+     * A31s 板载 1GB DDR3，起始地址固定 0x40000000（全志 SoC 的 SDRAM 基址）
+     * 注：主线内核下，实际容量由 U-Boot 传递给内核，此处声明仅作参考
+     */
+    memory@40000000 {
+        device_type = "memory";
+        reg = <0x40000000 0x40000000>;   /* 基址 1GB */
+    };
+
+    /*
+     * 串口0 —— 调试串口
+     * 这是咱们接 TTL 用的那个口，波特率 115200
+     * 必须保留，否则内核启动后没有控制台输出，出问题无法诊断
+     */
+    aliases {
+        serial0 = &uart0;
+        /* 以太网口固定命名为 eth0，避免内核按探测顺序改名 */
+        ethernet0 = &gmac;
+    };
+
+    chosen {
+        /*
+         * 内核启动参数
+         * console=ttyS0,115200  → 调试串口输出
+         * root=/dev/mmcblk0p2   → 根文件系统位置（SD 卡方案，见下方说明）
+         * rootwait              → 等待存储设备就绪，避免挂载失败
+         * init=/sbin/init       → OpenWrt 的启动入口
+         *
+         * 【重要】此处按"SD 卡启动"配置。
+         * 若后续改为 NAND 直接启动，需改成 root=/dev/mtdblockX 并配合 ubi 参数。
+         */
+        bootargs = "console=ttyS0,115200 earlyprintk root=/dev/mmcblk0p2 rootwait rw init=/sbin/init";
+
+        /* 标准输出设备指向串口0 */
+        stdout-path = "serial0:115200n8";
+    };
+
+    /*
+     * GPIO 按键（红外接收器 + 复位键）
+     * 注：此板具体按键 GPIO 未实测，以下为 A31 参考设计常见配置
+     * 若按键无效，需拆机对照原理图修改 gpio 编号
+     */
+    gpio-keys {
+        compatible = "gpio-keys";
+
+        key-recovery {
+            label = "Recovery";
+            linux,code = <KEY_RESTART>;
+            /* A31 参考设计常用 PH0 作为复位键，低电平有效 */
+            gpios = <&pio 7 0 GPIO_ACTIVE_LOW>;
+        };
+    };
+
+    /*
+     * LED 指示灯
+     * 注：GPIO 编号未实测，PH2 为 A31 盒子常见状态灯引脚
+     * 若灯不亮，不影响系统运行，可后续调整
+     */
+    leds {
+        compatible = "gpio-leds";
+
+        led-status: status {
+            function = LED_FUNCTION_STATUS;
+            color = <LED_COLOR_ID_GREEN>;
+            gpios = <&pio 7 2 GPIO_ACTIVE_HIGH>;
+            /* 内核启动后常亮，作为"系统已起来"的视觉确认 */
+            default-state = "on";
+        };
+    };
+};
+
+/*
+ * UART0 —— 调试串口
+ * 引脚复用：PH0(TX) / PH1(RX)
+ * status 必须为 okay，否则无控制台
+ */
+&uart0 {
+    pinctrl-names = "default";
+    pinctrl-0 = <&uart0_ph_pins>;
+    status = "okay";
+};
+
+/*
+ * SD 卡控制器（MMC0）
+ *
+ * 【关键决策】当前阶段用 SD 卡作为启动介质和根文件系统载体。
+ * 原因：NAND 里是安卓系统，直接刷写有变砖风险。
+ *       先用 SD 卡验证内核、驱动、网口全部正常，再考虑写入 NAND。
+ *
+ * 引脚复用：sun4i-a10-sdcard-v1（A31 兼容此配置）
+ * cd-gpios / wp-gpios 未接物理检测脚，故不声明，靠轮询检测
+ */
+&mmc0 {
+    pinctrl-names = "default";
+    pinctrl-0 = <&mmc0_pins_a>;
+    vmmc-supply = <&reg_vcc3v3>;     /* SD 卡 IO 电压 3.3V */
+    bus-width = <4>;                 /* 4 位总线，SD 卡标准 */
+    non-removable;                   /* 无卡检测脚，声明为不可移除，避免探测失败 */
+    status = "okay";
+};
+
+/*
+ * GMAC —— 以太网控制器
+ *
+ * 【实测依据】
+ *   安卓侧：/sys/class/mdio_bus/ 下存在 sunxi_gmac-0
+ *            /sys/bus/mdio_bus/devices/ 下为 sunxi_gmac-0:01
+ *            → PHY 地址 = 1
+ *            驱动为 "Generic PHY" → 标准 Clause 22 设备
+ *
+ * 【phy-mode 说明】
+ *   此处填 "mii"，依据：A31 官方参考设计默认 MII 模式（16 根数据线）。
+ *   若编译后网口不通（ifconfig eth0 up 报 PHY 连接失败），
+ *   改为 "rmii" 并将 pinctrl 改为 &gmac_pins_rmii，重新编译试一次。
+ *   两种模式成本都很低，先按 MII 走。
+ */
+&gmac {
+    pinctrl-names = "default";
+    pinctrl-0 = <&gmac_pins_mii>;
+    phy-mode = "mii";
+    phy-handle = <&ethphy>;
+    /*
+     * 时钟配置
+     * A31 的 GMAC 需要外部 25MHz 参考时钟，由 PHY 芯片提供
+     * 主线内核驱动会自动处理，此处无需额外声明
+     */
+    status = "okay";
+
+    /*
+     * MDIO 总线子节点
+     * 用于挂载 PHY 设备，地址由实测确定为 1
+     */
+    mdio {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        /*
+         * PHY 设备节点
+         *
+         * compatible 说明：
+         *   "ethernet-phy-ieee802.3-c22" = 通用 Clause 22 PHY
+         *   内核会用通用驱动接管，自动协商速率/双工，不依赖具体芯片型号。
+         *   这与安卓侧 "Generic PHY" 的行为完全一致，是最保险的选择。
+         *
+         * 若后续确认芯片为 RTL8201F，可改为精确匹配：
+         *   compatible = "ethernet-phy-id001c.c915";
+         * 功能上等价，仅驱动绑定方式不同。
+         */
+        ethphy: ethernet-phy@1 {
+            reg = <1>;
+            compatible = "ethernet-phy-ieee802.3-c22";
+        };
+    };
+};
+
+/*
+ * USB 主机控制器
+ *
+ * 【关键】WiFi 芯片 RTL8188EU 走 USB 总线，必须使能 USB 控制器。
+ *
+ * A31s 内部有 3 个 EHCI（高速）+ 3 个 OHCI（全速）控制器对。
+ * 实测 WiFi 挂在 USB 总线 1 上（uevent 显示 1-1:1.0），
+ * 对应硬件上的 EHCI1/OHCI1 通道。
+ *
+ * 为保险起见，三个通道全部使能——USB 设备会自动枚举，
+ * 多开几个通道不会有副作用，反而避免因通道编号判断错误导致 WiFi 不识别。
+ */
+
+/* USB EHCI 高速控制器（USB 2.0，480Mbps） */
+&ehci1 {
+    status = "okay";
+};
+
+/* USB OHCI 全速控制器（USB 1.1，12Mbps），与 EHCI1 配对使用 */
+&ohci1 {
+    status = "okay";
+};
+
+/* 备用通道，防止 WiFi 实际挂在其他端口 */
+&ehci2 {
+    status = "okay";
+};
+
+&ohci2 {
+    status = "okay";
+};
+
+/*
+ * NAND 闪存控制器
+ *
+ * 【分区表来源】U-Boot 启动日志实测输出，共 11 个分区。
+ *
+ * 【重要警告】
+ *   当前阶段【不要】把 rootfs 写到 NAND！
+ *   NAND 里是原装安卓系统，一旦擦除且 OpenWrt 启动失败，
+ *   盒子将失去启动能力，需要拆机短接或 JTAG 才能救回。
+ *
+ *   此处仅声明分区表，让内核能识别 NAND 结构，
+ *   实际根文件系统仍走 SD 卡（见 chosen 节点的 bootargs）。
+ *
+ *   待 SD 卡方案完全验证通过（网口、WiFi、USB 全部正常）后，
+ *   再考虑将 OpenWrt 写入 NAND 的对应分区。
+ *
+ * 注：全志 A31 的 NAND 控制器节点名为 nandc，
+ *     分区表作为其子节点声明。
+ */
+&nandc {
+    pinctrl-names = "default";
+    pinctrl-0 = <&nand_pins_a>;
+    status = "okay";
+
+    partitions {
+        compatible = "fixed-partitions";
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        /*
+         * 分区编号与 U-Boot 日志严格对应
+         * 偏移量单位：字节（十六进制）
+         * 若某分区大小与日志不符，会导致后续分区全部错位，务必核对
+         */
+
+        partition@0 {
+            label = "bootresource";
+            reg = <0x00000000 0x00200000>;   /* 2MB，U-Boot 启动资源 */
+        };
+
+        partition@200000 {
+            label = "env";
+            reg = <0x00200000 0x00100000>;   /* 1MB，U-Boot 环境变量 */
+        };
+
+        partition@300000 {
+            label = "boot";
+            reg = <0x00300000 0x00400000>;   /* 4MB，U-Boot 本体 */
+        };
+
+        partition@700000 {
+            label = "env-re";
+            reg = <0x00700000 0x00100000>;   /* 1MB，环境变量备份区 */
+        };
+
+        partition@800000 {
+            label = "baseparam";
+            reg = <0x00800000 0x00400000>;   /* 4MB，基础参数区 */
+        };
+
+        partition@c00000 {
+            label = "sunxisrv";
+            reg = <0x00c00000 0x00400000>;   /* 4MB，全志服务分区 */
+        };
+
+        partition@1000000 {
+            label = "misc";
+            reg = <0x01000000 0x00400000>;   /* 4MB，杂项数据 */
+        };
+
+        partition@1400000 {
+            label = "recovery";
+            reg = <0x01400000 0x00a00000>;   /* 10MB，安卓恢复模式 */
+        };
+
+        partition@1e00000 {
+            label = "cache";
+            reg = <0x01e00000 0x03200000>;   /* 50MB，安卓缓存分区 */
+        };
+
+        partition@5000000 {
+            label = "system";
+            reg = <0x05000000 0x19000000>;   /* 400MB，安卓系统分区 */
+        };
+
+        partition@1e000000 {
+            label = "userdata";
+            reg = <0x1e000000 0x62000000>;   /* 1568MB，用户数据分区 */
+        };
+    };
+};
+
+/*
+ * 【未声明但已确认的硬件】
+ *
+ * WiFi：RTL8188EU
+ *   走 USB 总线，内核 USB 子系统自动枚举，DTS 无需任何节点。
+ *   OpenWrt 编译时勾选 kmod-rtl8188eu 即可驱动。
+ *
+ * 蓝牙：独立芯片，走 USB 总线
+ *   依据：TTL 日志出现 rtk_btusb 驱动加载记录。
+ *   8188 系列本身不含蓝牙，故蓝牙必为独立芯片。
+ *   当前阶段暂不处理，待 WiFi 跑通后再单独适配。
+ */
