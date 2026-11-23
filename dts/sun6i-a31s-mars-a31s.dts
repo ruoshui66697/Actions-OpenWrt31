@@ -9,26 +9,44 @@
  * ============================================================
  *  【本文件所有参数的来源分级 —— 改之前先看这里】
  * ============================================================
- *  [A] 实锤：安卓 TTL 串口日志 + adb shell + 芯片丝印 + datasheet 三方互证
+ *  [A] 实锤：安卓 TTL 串口日志 + adb shell + sys_config.fex + /proc/partitions 互证
  *  [B] 公版推断：内核自带 cs908.dts（同 SoC/同 MII/同 USB 结构的电视盒子）
  *  [C] 未实测：照 A31 参考设计猜的，可能需要改 —— 全文搜 ⚠️ 定位
  *
  *  已知结论清单（[A] 级，不要改）：
  *    SoC       : sun6i-a31s，不是 sun6i-a31（A31 与 A31s 引脚/时钟有差异）
- *    DRAM      : 1GB DDR3-1600，2x K4B4G1646D-YHK0，由 U-Boot 经 dcdc5=1500mV 供电
+ *    DRAM      : 1GB DDR3 16bit 400MHz, dcdc5=1500mV, dram_zq=0xBB (fex [dram_para])
+ *    PMIC      : AXP221 @ I2C 0x34 on TWI1 (PH16/17)，fex [pmu_para] 实锤
+ *                DLDO1→网口PHY  DLDO4→axp_0  ALDO1→WiFi  DCDC5→DDR3
  *    NAND      : H27UBG8T2B x8 MLC，页 8192+640 / 块 2MiB / ECC 20bit@1024B
- *                NAND ID = 4b248889（日志实测），chip_cnt=4（4 片选，不是 1 片 16G）
+ *                NAND ID = 4b248889（日志实测），chip_cnt=4
+ *                nand_p0=0x28010020  nand_p1=0x00eeeeee（fex [nand0_para]）
  *    PHY       : MDIO 地址 0x01，MII 模式（16 根数据线），RTL8201F 系列
  *    WiFi      : RTL8188ETV，USB 0bda:0179，走 USB 自动枚举，DTS 零节点
+ *                fex wifi_mod_sel=6 / wifi_usbc_id=1 / wifi_power=axp22_aldo1
  *    BT        : RTL8723BS（日志 rtk_btusb），后补；AP6181 为空贴，永远不提
- *    串口      : UART0，115200n8，日志里 bootconsole 走的就是它
+ *    串口      : UART0 = PH20(TX)/PH21(RX)，115200n8
+ *                ★ fex [uart_para] 实锤，原写 PH0/PH1 是错的（见 ★改动1）
+ *    IR        : PL04, 电源键码 0x1A, addr 0xFB04（fex [ir_para]）
+ *    按键      : PH13 = sprite_gpio0 卡刷键（fex [card_boot]/[boot_init_gpio]）
  *    mmc0      : 硬件悬空（日志 "mmc0: init failed"），本文件【不声明】
- *    HDMI      : GM7121 外接编码器，主线无驱动，本文件【不声明】 disp/tv
+ *    HDMI      : GM7121 外接编码器，主线无驱动，本文件【不声明】disp/tv
  *    启动方式  : FEL 推内存 + initramfs，内核自带 rootfs，【不碰 NAND】
+ *
+ *  分区表（fex [partition] 与 /proc/partitions 双重验证，11/11 全对，单位 MB）：
+ *    nanda=bootloader 16  nandb=env 16   nandc=boot 16   nandd=system 768
+ *    nande=misc 16        nandf=recovery 32  nandg=private 16(keydata=1)
+ *    nandh=databk 128     nandi=data 2560   nandj=cache 512  nandk=UDISK 9714
+ *    ★ 没有任何单个分区是 16G，旧版把 system 写 400M/1568M/16G 全是错的
+ *
+ *  MAC 地址：
+ *    wlan0 08:D8:33:0B:C4:03  ← IEEE 注册，真烧录，必保
+ *    eth0  1E:47:EC:5F:E9:D9  ← 由 A31s SID efuse 算出，变则在
+ *                                /etc/config/network 里 option macaddr 写死
  *
  *  编译与运行：
  *    1) 放到内核树 arch/arm/boot/dts/allwinner/sun6i-a31s-mars-a31s.dts
- *       （Linux 6.6+ DTS 已按 vendor 分目录；6.1 及以前放 arch/arm/boot/dts/）
+ *       （Linux 6.6+ DTS 按 vendor 分目录；6.1 及以前放 arch/arm/boot/dts/）
  *    2) OpenWrt 侧 target/linux/sunxi/image/cortexa7.mk 加 Device 块，SOC 填 sun6i-a31s
  *    3) .config 必须勾 CONFIG_TARGET_ROOTFS_CPIOGZ=y，否则推内存没有 rootfs
  *    4) 产物: openwrt-sunxi-cortexa7-*-initramfs-kernel.bin
@@ -41,7 +59,9 @@
  *    x 曾写 compatible = "allwinner,sun6i-a31s","allwinner,sun6i-a31" -> 顺序反了
  *    x 曾写 &mmc0 { status="okay"; non-removable } -> 卡槽物理不存在，内核 panic
  *    x 曾写 root=/dev/mmcblk0p2 -> initramfs 下根本没有这个设备节点
- *    x 曾抄一份 400M/1568M 的 NAND 分区表 -> 本机实为 768M/2560M，照写会覆盖数据
+ *    x 曾抄 400M/1568M/16G 的 NAND 分区表 -> 本机实为 768M/2560M，照写会覆盖数据
+ *    x uart0 曾写 PH0/PH1 -> 实为 PH20/PH21，照抄会导致内核起来串口全黑
+ *    x dd bs=1M 在安卓 toybox 失效 -> 必须 bs=1024，也不认 status=progress
  * ============================================================
  */
 
@@ -52,8 +72,8 @@
 
 /*
  * 注意：KEY_* / LED_FUNCTION_* 这几个宏的头文件路径在内核版本间挪过位置。
- *   - 6.x  : dt-bindings/input/linux-event-codes.h
- *   - 5.x  : dt-bindings/input/input.h
+ *   - 6.x : dt-bindings/input/linux-event-codes.h
+ *   - 5.x : dt-bindings/input/input.h
  * 若编译时报 "KEY_RESTART undeclared"，把下面这行换成 6.x 的那个路径。
  * 本文件只在 gpio-keys 里用到一个 KEY_RESTART，实在不行可以直接写 <0x198> 绕开。
  */
@@ -87,14 +107,14 @@
         /*
          * [A] 启动参数 —— FEL/initramfs 专用，与 SD/NAND 方案完全不同
          *
-         *   console=ttyS0,115200 -> 调试串口（就是你现在接 TTL 那个口）
+         *   console=ttyS0,115200 -> 调试串口（PH20/PH21，接 TTL 那个口）
          *   earlyprintk          -> 内核解压阶段就出字，卡死在 early boot 时能定位
          *   loglevel=8           -> 全量日志。第一次跑必开，定稿后再降到 4
          *
          * 【没有 root= 参数，这是故意的】
          *   rootfs 已经打进内核镜像（initramfs），内核自己挂 rootfs，
          *   写 root=/dev/xxx 反而会让它去找不存在的设备然后 panic。
-         *   等将来真要落 NAND，再改成 ubi.rootfstype=ubi ubi.mtd=X root=ubi0:xxx
+         *   等将来真要落 NAND，再改 ubi.rootfstype=ubi ubi.mtd=X root=ubi0:xxx
          */
         bootargs = "console=ttyS0,115200 earlyprintk loglevel=8";
         stdout-path = "serial0:115200n8";
@@ -105,8 +125,9 @@
      *  主线 sunxi 驱动（USB PHY / MMC / 音频）会去查这些 supply，
      *  不声明会刷一堆 "XXX supply not found, using dummy regulator" 的噪声。
      *  这些都是板子上本来就有的固定 3.3V/5V，不是 PMIC 可调轨。
-     *  AXP221 的 7 路可调电压（dcdc1~5/aldo2/3）由 U-Boot + 内核 axp 驱动
-     *  自己按 script.bin 配好，【不需要】在这里重复声明。
+     *  AXP221 的可调电压（fex: dcdc1~5 / aldo2 / aldo3 / dldo1 / dldo4）
+     *  由 U-Boot + 内核 axp221 驱动按 script.bin 自行配好，
+     *  【不需要】在这里重复声明。
      * ======================================================== */
     reg_vcc3v3: regulator-vcc3v3 {
         compatible = "regulator-fixed";
@@ -127,14 +148,14 @@
     };
 
     /* ========================================================
-     *  ⚠️ [C 级 · 未实测] GPIO 按键
-     *  参考内核 cs908.dts：那块板只有红外、没有 GPIO 按键。
-     *  你这盒子前面板有没有实体复位/恢复键，我没看到实测证据。
-     *
-     *  若串口日志里出现 "gpio-keys: no keys defined" 或按键无反应：
-     *    1) 先确认板上到底有没有这个键（拆机看前面板）
-     *    2) 有 -> 去 script.bin 的 [tkey_para] 段读真实 GPIO（0x04E0 附近）
-     *    3) 没有 -> 把整个 gpio-keys 节点删掉，不影响任何功能
+     *  [A] GPIO 按键 —— 恢复/卡刷键
+     *  ★改动2：PH0 → PH13
+     *    fex [card_boot] sprite_gpio0 = port:PH13<1><default><default><1>
+     *    fex [boot_init_gpio] gpio_pin_1 = port:PH13（输出高）
+     *    PH13 = 7 * 32+13 = 237，全志"按着开机进卡刷"的脚，fex 双重背书。
+     *    原写 PH0（index 224）无任何依据，已废弃。
+     *  若串口出现 "gpio-keys: no keys defined" 或按键无反应，
+     *  去 b_nandb.bin 的 U-Boot env 或 b_nandc.bin 的原厂 DTB 里核对。
      * ======================================================== */
     gpio-keys {
         compatible = "gpio-keys";
@@ -143,17 +164,17 @@
         key-recovery {
             label = "Recovery";
             linux,code = <KEY_RESTART>;
-            gpios = <&pio 7 0 GPIO_ACTIVE_LOW>;     /* ⚠️ PH0，待实测 */
+            gpios = <&pio 7 13 GPIO_ACTIVE_LOW>;    /* ★改动2: PH13, index 237 */
             wakeup-source;
         };
     };
 
     /* ========================================================
-     *  ⚠️ [C 级 · 未实测] 状态 LED
-     *  同样没有实测依据。灯不亮完全不影响功能，
-     *  真要搞准就去 script.bin 的 [leds_para] / [gpio_para] 段查。
-     *  调试期建议保持 default-state = "on"：
-     *  灯亮着 = 内核跑到 pinctrl 了，是个免费的心跳指示。
+     *  ⚠️ [C 级 · 仍无实测依据] 状态 LED
+     *  fex 全文没有 [leds_para] 段，PH2 是照 A31 参考设计猜的。
+     *  灯不亮完全不影响功能。调试期保持 default-state = "on"：
+     *  灯亮 = 内核跑到 pinctrl 了，是个免费的心跳指示。
+     *  【下一阶段从 b_nandc.bin 挖出原厂 DTB 后，用真实引脚替换这里】
      * ======================================================== */
     leds {
         compatible = "gpio-leds";
@@ -161,35 +182,61 @@
         led-status: status {
             function = LED_FUNCTION_STATUS;
             color = <LED_COLOR_ID_GREEN>;
-            gpios = <&pio 7 2 GPIO_ACTIVE_HIGH>;    /* ⚠️ PH2，待实测 */
+            gpios = <&pio 7 2 GPIO_ACTIVE_HIGH>;    /* ⚠️ PH2, index 226, 待实测 */
             default-state = "on";
         };
     };
 
-    /*
-     * ⚠️ [B 级] 红外接收器
-     * cs908 是开了 ir 的，A31 盒子基本都带。开了没坏处，
-     * 但遥控器键码表要另外配（/etc/rc_keymaps），第一阶段可以先不管。
-     */
+    /* ========================================================
+     *  [A] 红外接收器
+     *  ★改动3：不再依赖 ir_pins_a 组名，改用下方 &pio 里自定义的 ir_pl4_pin
+     *    fex [ir_para] ir_rx = port:PL04<2><1><default><default>
+     *                   ir_power_key_code = 0x1A, ir_addr_code = 0xFB04
+     *    PL4 = 11 * 32+4 = 356
+     *  遥控器键码表要另配（/etc/rc_keymaps），第一阶段可以先不管。
+     * ======================================================== */
     ir {
         compatible = "allwinner,sun6i-a31-ir";
         clocks = <&ccu CLK_BUS_IR>, <&ccu CLK_IR>;
         clock-names = "ahb", "mod";
         pinctrl-names = "default";
-        pinctrl-0 = <&ir_pins_a>;                   /* ⚠️ 引脚组名需核对 a31s.dtsi */
+        pinctrl-0 = <&ir_pl4_pin>;                  /* ★改动3: PL04, 不再用 ir_pins_a */
         resets = <&ccu RST_BUS_IR>;
         status = "okay";
     };
 };
 
 /* ============================================================
+ *  ★新增：自定义引脚组
+ *  用途：绕开"sun6i-a31s.dtsi 里到底有没有这个组名 / 拼错没拼错"的不确定性。
+ *  三个 function 字符串必须对上 sun6i-a31s-pinctrl.c 里 sunxi_function 表的拼写：
+ *    grep -n '"uart0"\|"ir"' drivers/pinctrl/sunxi/pinctrl-sun6i-a31s.c
+ *  若报 -EINVAL 或 dtc 警告，就是这里拼错了，按 grep 结果改。
+ * ============================================================ */
+&pio {
+    /* ★改动1 配套：UART0 走 PH20/PH21 */
+    uart0_ph20_pins: uart0-ph20-pins {
+        pins = "PH20", "PH21";      /* 7 * 32+20=244(TX), 7 * 32+21=245(RX) */
+        function = "uart0";
+    };
+
+    /* ★改动3 配套：IR 接收走 PL04 */
+    ir_pl4_pin: ir-pl4-pin {
+        pins = "PL4";               /* 11 * 32+4 = 356 */
+        function = "ir";
+    };
+};
+
+/* ============================================================
  *  UART0 —— 调试串口
  *  [A] 必须 okay，否则内核起来后一片黑，出事没法诊断
- *  引脚：PH0(TX) / PH1(RX)，uart0_ph_pins 定义在 sun6i-a31s.dtsi
+ *  ★改动1：pinctrl 从 uart0_ph_pins（PH0/PH1）换成 uart0_ph20_pins（PH20/PH21）
+ *    依据 fex [uart_para] uart_debug_tx=PH20<2> / uart_debug_rx=PH21<2>
+ *    A31s 上 PH0/PH1 不是 UART0 的复用脚，原写法会让串口彻底没输出。
  * ============================================================ */
 &uart0 {
     pinctrl-names = "default";
-    pinctrl-0 = <&uart0_ph_pins>;
+    pinctrl-0 = <&uart0_ph20_pins>;                 /* ★改动1: PH20/PH21 */
     status = "okay";
 };
 
@@ -200,20 +247,22 @@
  *      /sys/class/mdio_bus/        -> sunxi_gmac-0
  *      /sys/bus/mdio_bus/devices/  -> sunxi_gmac-0:01   ← PHY 地址 = 1
  *      驱动 "Generic PHY"          -> 标准 Clause 22 设备
- *      script.bin 的 gmac_para 段列出了 TXD0~7 / RXD0~7 共 16 根数据线
- *      -> 确定是 MII，不是 RMII（RMII 只有 2+2 根）
+ *      fex [gmac_para]：gmac_interface = 1 (MII)，TXD0~7/RXD0~7 共 16 根数据线
+ *                       gmac_power = "axp22_dldo1"  ← PHY 由 AXP221 DLDO1 供电
+ *      （RMII 只有 2+2 根数据线，所以确定是 MII 不是 RMII）
  *
- *  若 ifconfig eth0 up 报 "PHY connection failure"：
- *    第一步：确认 gmac_pins_mii 这个引脚组名在 a31s.dtsi 里真的存在
- *            （grep 一下，名字可能是 gmac_mii_pins / gmac_pins）
+ *  若 ifconfig eth0 up 报 "PHY connection failure"，【一次只动一个变量】：
+ *    第一步：确认 gmac_pins_mii 这个组名在 a31s.dtsi 里真的存在
+ *            （名字可能是 gmac_mii_pins / gmac_pins / gmac_mii_pins_a）
  *    第二步：才去试 phy-mode = "rmii" + 对应 rmii 引脚组
- *    【不要】两处同时改，一次只动一个变量，否则不知道是哪个救活的
+ *    第三步：查 AXP221 DLDO1 是否真的上电（cat /sys/class/regulator/*/name）
  * ============================================================ */
 &gmac {
     pinctrl-names = "default";
     pinctrl-0 = <&gmac_pins_mii>;                   /* ⚠️ 组名需 grep 核实 */
     phy-mode = "mii";                               /* [A] 16 根数据线 = MII */
     phy-handle = <&ethphy>;
+    phy-supply = <&reg_vcc3v3>;                     /* [A] fex: gmac_power = axp22_dldo1 */
 
     mdio {
         #address-cells = <1>;
@@ -235,20 +284,22 @@
  *
  *  [A] RTL8188ETV 挂在 USB 上（0bda:0179），USB 不起来 WiFi 就没戏。
  *  日志显示 WiFi 在总线 1（uevent: 1-1:1.0）-> 对应 EHCI1/OHCI1。
+ *  fex [wifi_para] wifi_usbc_id = 1 / wifi_mod_sel = 6 (rtl8188eu) 印证。
  *
  *  策略：ehci0/1 + ohci0/1 全开。多开无副作用（没设备就不枚举），
- *        但能避免"通道编号判断错导致 WiFi 不识别"这种低级返工。
+ *        能避免"通道编号判断错导致 WiFi 不识别"这种低级返工。
  *        ehci2/ohci2 在 A31 上对应 USB-OTG/HSIC，本机用途不明，先不动。
  *
- *  ⚠️ VBUS 供电：cs908 用 PC27 控 USB1 的 VBUS（usb1_vbus_pin）。
- *     如果 WiFi 枚举不上（lsusb 看不到 0bda:0179），九成是 VBUS 没电。
- *     那时去 script.bin 的 [usbc1]/[usb_para] 段查真实供电 GPIO，
- *     再加一个 regulator-fixed + usb1_vbus-supply 挂到 &usbphy。
- *     【不要】现在盲写一个 GPIO 上去 —— 写错脚可能把 USB 口电搞反。
+ *  [A] VBUS 供电（已从 [C] 升级）：
+ *      fex [usbc0]/[usbc1] usb_drv_vbus_gpio = （空）-> PMU 直供，不靠 GPIO
+ *      fex [usbc2]         usb_drv_vbus_gpio = port:PC27  -> 只有 USB2 用 GPIO
+ *      所以 USB0/1 写常开 5V 是对的。
+ *      若 lsusb 看不到 0bda:0179，九成是 AXP221 ALDO1（wifi_power）没开，
+ *      去查 regulator，【不要】盲写 GPIO 上去（写错脚会把 USB 口电搞反）。
  * ============================================================ */
 &usbphy {
     status = "okay";
-    usb1_vbus-supply = <&reg_vcc5v>;                /* ⚠️ [C] 先给常开 5V，不够再改 GPIO */
+    usb1_vbus-supply = <&reg_vcc5v>;                /* [A] fex: usbc0/1 VBUS 由 PMU 直供 */
 };
 
 &ehci0 { status = "okay"; };    /* [A] USB 通道 0 高速 */
@@ -257,34 +308,47 @@
 &ohci1 { status = "okay"; };    /* [A] USB 通道 1 全速 */
 
 /* ============================================================
- *  以下三块硬件，本阶段【故意不写】，留档说明原因，免得以后又有人加回来
+ *  以下硬件，本阶段【故意不写】，留档说明原因，免得以后又有人加回来
  * ============================================================
+ *
+ *  【nand / nandc 控制器 + 分区表】—— 本阶段一行都不写
+ *     NAND 里是完整可用的安卓，5 份备份（nanda/b/c/d/f/g）已在电脑上。
+ *     主线 sunxi-nand 驱动需要正确的 nand_para，而且【极性敏感】：
+ *     一旦驱动挂上并扫描，就可能触发擦写/坏块表更新，直接毁掉原系统。
+ *     参数已备齐（页8192 / OOB640 / 块2MiB / ECC20bit@1024B / 4片选 /
+ *     nand_p0=0x28010020 / nand_p1=0x00eeeeee），
+ *     等 FEL 内存方案全绿、且做完 b_nandc.bin 的原厂 DTB 比对之后，
+ *     再单独开一个 nand-part.dtsi 挂进来。届时分区表照抄：
+ *       bootloader 16M / env 16M / boot 16M / system 768M / misc 16M /
+ *       recovery 32M / private 16M / databk 128M / data 2560M /
+ *       cache 512M / UDISK 剩余(9714M)
  *
  *  【mmc0 / SD 卡槽】—— 物理不存在
  *     开机日志: [mmc] mmc0: init failed, RET:FFFFFFFF
- *     声明它会让内核一直轮询一个不存在的卡槽，rootfs 找不到直接 panic。
- *     旧版 DTS 里写的 `non-removable` 更是自相矛盾（给不存在的卡槽声明不可拔）。
+ *     声明它会让内核一直轮询不存在的卡槽，rootfs 找不到直接 panic。
+ *     注：fex [mmc0_para] sdc_used=1 是公版模板残留，与实测冲突，以实测为准。
  *
- *  【nand / nandc】—— 本阶段一行都不写
- *     NAND 里是完整可用的安卓。主线内核的 sunxi nand 驱动（sunxi-nand）
- *     需要正确的 nand_para，而且【极性敏感】：
- *     一旦驱动挂上并扫描，就可能触发擦写/坏块表更新，直接毁掉原系统。
- *     参数我已备齐（页8192 / OOB640 / 块2MiB / ECC20bit@1024B / 4片选），
- *     等 FEL 内存方案全绿、且做完 nandd+nandi 的完整备份之后，
- *     再单独开一个文件 nand-part.dtsi 挂进来。
+ *  【mmc1 / SDIO】—— fex 标 sdc_isio=1（PG00~PG05），但 RTL8188EU 走 USB，
+ *     这条总线本机实际挂了什么未知。等原厂 DTB 出来再定，先不声明。
  *
- *     顺带：旧版那份分区表是错的（system 写 400M、data 写 1568M），
- *     本机实测 nandd=768M、nandi=2560M、nandj=512M。照旧表写会覆盖数据。
- *
- *  【disp / hdmi / tv】—— 主线无驱动
- *     HDMI 是外接 GM7121 编码器（不是 SoC 内置 HDMI PHY），
- *     主线没有 GM7121 驱动，写了也不出图。调试期只用 TTL 串口。
+ *  【disp / hdmi / tv / lcd】—— 主线无驱动
+ *     HDMI 是外接 GM7121 编码器（fex [tv0_para] tv_module_name="gm7121"），
+ *     不是 SoC 内置 HDMI PHY，主线无 GM7121 驱动，写了也不出图。
+ *     fex screen0_output_type=3 / mode=5 -> 720p60，仅安卓 BSP 有效。
+ *     调试期只用 TTL 串口（PH20/PH21）。
  *
  *  【BT / RTL8723BS】—— 后补
+ *     fex [bt_para] bt_used=1 / bt_uart_id=2 -> UART2 (PG06/PG07)。
  *     日志有 rtk_btusb 加载记录，走 USB 自动枚举，DTS 零节点，
  *     只需 .config 勾 kmod-btrtl + 放 rtl8723b 固件。第二阶段再弄。
  *
- *  【AP6181】—— 空贴
- *     BOM 里有位号但板上没焊芯片，DTS 一个字都不要提。
+ *  【AP6181 / 触摸屏 / 摄像头 / 3G / G-sensor】—— 空贴或未装配
+ *     fex 里 rtp/ctp/lcd/vip/3g/gsensor 全是 used=0，但参数齐全
+ *     （这是 A31 BOX 公版满配模板）。一个字都不要加。
+ *
+ *  【AXP221 PMIC 节点】—— 暂不手写
+ *     主线有 axp209/axp221 驱动，挂 twi1@34 即可，但 regulator 映射要
+ *     照原厂 DTB 抄，手写容易把 DLDO1(网口)/ALDO1(WiFi) 配错导致外设没电。
+ *     等 b_nandc.bin 挖出 DTB 后补 &twi1 { axp221@34 { ... } }。
  * ============================================================
  */
