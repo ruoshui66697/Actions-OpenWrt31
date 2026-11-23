@@ -58,7 +58,7 @@ jobs:
 
     # ── 3. 拉 lede 源码 ──
     - name: Clone LEDE source
-      working-directory: /workdir
+
       run: |
         mkdir -p /workdir && cd /workdir
         git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
