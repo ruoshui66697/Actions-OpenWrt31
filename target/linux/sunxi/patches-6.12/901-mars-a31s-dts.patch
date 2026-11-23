@@ -1,0 +1,17 @@
+--- a/arch/arm/boot/dts/allwinner/Makefile
++++ b/arch/arm/boot/dts/allwinner/Makefile
+@@
++dtb-$(CONFIG_MACH_SUN6I_A31S) += sun6i-a31s-mars-a31s.dtb
+--- a/arch/arm/boot/dts/allwinner/Kconfig
++++ b/arch/arm/boot/dts/allwinner/Kconfig
+@@
++config MACH_SUN6I_A31S_MARS_A31S
++	bool "Allwinner MARS A31s"
++	depends on ARCH_MULTI_V7
++	select MACH_SUN6I
++	select SUNXI_DEVDDB
++	select SUNXI_CCU
++	select SUNXI_SRAM
++	select ARM_GIC
++	help
++	  Support for Inphic MARS A31s TV box.
