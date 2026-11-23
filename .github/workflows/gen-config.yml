@@ -95,16 +95,23 @@ jobs:
         cd "$GITHUB_WORKSPACE/lede-src/openwrt"
         rm -f .config .config.old
 
-        make defconfig                                   # 先给基线
+        # ① 先来一份基线（全默认 = x86_64）
+        make defconfig
 
-        scripts/config set TARGET_sunxi y
-        scripts/config set TARGET_sunxi_cortexa7 y
-        scripts/config set TARGET_sunxi_cortexa7_DEVICE_inphic_mars-a31s y
-        scripts/config set TESTING_KERNEL y              # 切内核 6.12
-        scripts/config set TARGET_ROOTFS_CPIOGZ y        # initramfs，推内存必需
-        scripts/config set TARGET_ROOTFS_PARTSIZE 256
+        # ② 把关键符号直接写进去
+        #    不用 scripts/config（lede 的 scripts/config 是个目录，不是可执行文件）
+        #    写完靠下面的 make defconfig 按依赖关系自动补全几千行
+        cat >> .config <<'EOF'
+        CONFIG_TARGET_sunxi=y
+        CONFIG_TARGET_sunxi_cortexa7=y
+        CONFIG_TARGET_sunxi_cortexa7_DEVICE_inphic_mars-a31s=y
+        CONFIG_TESTING_KERNEL=y
+        CONFIG_TARGET_ROOTFS_CPIOGZ=y
+        CONFIG_TARGET_ROOTFS_PARTSIZE=256
+        EOF
 
-        make defconfig                                   # 全量重算，补齐依赖
+        # ③ 全量重算：补依赖、填默认值
+        make defconfig
 
         echo "============= 结果核对（全为 1 才算成）============="
         for s in TARGET_sunxi TARGET_sunxi_cortexa7 \
@@ -112,7 +119,7 @@ jobs:
                  TESTING_KERNEL TARGET_ROOTFS_CPIOGZ; do
           printf '%-45s = %s\n' "$s" "$(grep -c "^CONFIG_${s}=y$" .config)"
         done
-        echo "---------- 内核版本（TESTING 槽=6.12）----------"
+        echo "---------- 内核版本（TESTING 槽 = 6.12）----------"
         grep -n 'KERNEL_PATCHVER' include/kernel-version.mk | head -5
         echo "---------- .config 行数（必须几千行）----------"
         wc -l .config
