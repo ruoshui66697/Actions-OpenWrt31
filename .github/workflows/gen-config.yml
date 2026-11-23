@@ -141,11 +141,18 @@ jobs:
         echo "=== 5 个关键符号全部就位 ==="
 
     # ── 8. 传出 artifact ──
+    - name: Stage .config for upload
+      run: |
+        cd "$GITHUB_WORKSPACE/lede-src/openwrt"
+        cp -f .config "$GITHUB_WORKSPACE/mars-a31s.config"
+        ls -l "$GITHUB_WORKSPACE/mars-a31s.config"
+        head -5 "$GITHUB_WORKSPACE/mars-a31s.config"
+
     - name: Upload .config artifact
-      uses: actions/upload-artifact@main
+      uses: actions/upload-artifact@v3
       with:
         name: openwrt-dotconfig
-        path: ${{ github.workspace }}/lede-src/openwrt/.config
+        path: mars-a31s.config
         retention-days: 7
         if-no-files-found: error
 
