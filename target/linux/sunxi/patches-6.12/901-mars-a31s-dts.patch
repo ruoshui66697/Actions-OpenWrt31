@@ -1,17 +1,67 @@
---- a/arch/arm/boot/dts/allwinner/Makefile
-+++ b/arch/arm/boot/dts/allwinner/Makefile
-@@
-+dtb-$(CONFIG_MACH_SUN6I_A31S) += sun6i-a31s-mars-a31s.dtb
+# =============================================================================
+# 901-mars-a31s-add-dts.patch
+# =============================================================================
+# 作用 : 让内核【真的编译】Inphic MARS A31s 的板级 DTS，产出 .dtb
+#
+# 为什么需要它（红过一次的根因）:
+#   DTS 正本由仓库 target/linux/sunxi/files/arch/arm/boot/dts/allwinner/ 提供，
+#   会被铺进内核源码树；但内核只编译 dts 目录 Makefile 里 dtb-y 列出的那些。
+#   不补这一行 -> 文件在树里却不编译 -> 不产出 sun6i-a31s-mars-a31s.dtb
+#   -> mkits.sh 报 FATAL ERROR: Couldn't open "...sun6i-a31s-mars-a31s.dtb"
+#   -> make[5] Error 1 / Process completed with exit code 2
+#
+# 编号说明 : 9xx = 未分类/本地板级补丁，不与上游 0xx(移植)/1xx(待合入)/
+#            2xx(构建配置)/3xx(架构)/7xx(网络PHY)/8xx(驱动) 冲突
+# 目录说明 : 必须是 patches-6.12（.config 里 LINUX_6_12=y，内核 6.12.118），
+#            不是 patches-6.1
+#
+# 打上验证 : CI 日志里能看到 Applying ...901-mars-a31s-add-dts.patch
+#            且 build_dir/.../linux-6.12.118/arch/arm/boot/dts/allwinner/
+#            下出现 sun6i-a31s-mars-a31s.dtb
+# =============================================================================
+
 --- a/arch/arm/boot/dts/allwinner/Kconfig
 +++ b/arch/arm/boot/dts/allwinner/Kconfig
-@@
+@@ -1,3 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0-only
++
+ config MACH_SUN4I
+ 	bool "Allwinner A10 (sun4i) Based Boards"
+ 	depends on ARCH_MULTI_V7
+@@ -60,6 +61,20 @@ config MACH_SUN6I_A31S
+ 	select SUNXI_SRAM
+ 	select USB_EHCI_BIG_ENDIAN_MMIO
+ 
++# --- Inphic MARS A31s 电视盒 ---
++# 符号名 MACH_SUN6I_A31S_MARS_A31S 必须和 Makefile 里 dtb-$(CONFIG_xxx) 的
+# xxx 完全一致，少一个字就匹配不上，dtb 照样不编译
 +config MACH_SUN6I_A31S_MARS_A31S
-+	bool "Allwinner MARS A31s"
++	bool "Allwinner MARS A31s (Inphic MARS A31s TV Box)"
 +	depends on ARCH_MULTI_V7
 +	select MACH_SUN6I
-+	select SUNXI_DEVDDB
++	select MACH_SUN6I_A31S
 +	select SUNXI_CCU
++	select SUNXI_DEVDDB
 +	select SUNXI_SRAM
 +	select ARM_GIC
 +	help
-+	  Support for Inphic MARS A31s TV box.
++	  Say Y here if you want to build a kernel for the Inphic MARS A31s
++	  Android TV box (A31s quad Cortex-A7, 1GB DDR3, RTL8201F MII PHY).
++
+ config MACH_SUN7I
+ 	bool "Allwinner A20 (sun7i) Based Boards"
+ 	depends on ARCH_MULTI_V7
+--- a/arch/arm/boot/dts/allwinner/Makefile
++++ b/arch/arm/boot/dts/allwinner/Makefile
+@@ -20,6 +20,9 @@ dtb-$(CONFIG_MACH_SUN6I_A31) += \
+ dtb-$(CONFIG_MACH_SUN6I_A31S) += \
+ 	sun6i-a31s-c1.dtb \
+ 	sun6i-a31s-cubieboard4.dtb \
++	sun6i-a31s-cubieboard5.dtb \
++
++# --- Inphic MARS A31s（本盒子）---
++dtb-$(CONFIG_MACH_SUN6I_A31S_MARS_A31S) += sun6i-a31s-mars-a31s.dtb
++
+ dtb-$(CONFIG_MACH_SUN7I) += \
+ 	sun7i-a20-bananapi.dtb \
+ 	sun7i-a20-bananapro.dtb \
