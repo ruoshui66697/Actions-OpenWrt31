@@ -5,23 +5,30 @@
 # 与主流程 openwrt-bulder.yml 的区别:
 #   主流程 : 全量编译 + 打包 + 上传 release，约 117 分钟/次
 #   本流程 : 只跑到 target/linux/compile（内核+dtb），后续约 5-10 分钟/次
-#            （首次仍要编一次工具链，约 40 分钟，逃不掉）
+#            （首次仍要编一次工具链，逃不掉）
 #
 # ------------------------------------------------------------------------------
 # 【为什么 dtb-y 必须在这里插，而不能放 diy-part2.sh】
 #   diy-part2.sh 跑在 Load custom configuration 步，那时 build_dir 里
-#   【还没有内核树】，实测 KDIR=空，sed 必然跳过（日志实锤）。
-#   make defconfig 也只生成 .config，不解压内核源码。
+#   【还没有内核树】，实测 KDIR=空，sed 必然跳过。make defconfig 也不解压内核。
 #   -> 必须先 make target/linux/prepare，等内核树解压完、
 #      files-6.12 覆盖层铺完，再 sed 插 dtb-y，否则插了也会被盖回去。
+#   ★ 已验证通过：[inject] 已插入 dtb-y 条目，不要改这一步。
+#
+# 【为什么不能砍掉 make download（踩过的坑）】
+#   上一版为了省时间砍掉了 make download，结果 target/linux/prepare
+#   触发内核 olddefconfig 时报：
+#     arm-openwrt-linux-muslgnueabi-gcc: No such file or directory
+#     flex: fatal internal error, exec of .../staging_dir/host/bin/m4 failed
+#   原因：host 工具(m4/flex/bison)和交叉编译器由 make download 阶段备齐，
+#   砍掉它们就没准备好。所以 make download 必须保留（下面 Make defconfig 步）。
 #
 # 【为什么不挂 CONFIG_MACH_...】
 #   直接写无条件 `dtb-y += xxx.dtb`，省掉 Kconfig 符号那一环失败点。
-#   单设备固件无副作用。
 #
 # 【dtb 校验为什么要硬 exit 1】
-#   主流程里 dtb 缺失会一路跑到 mkits，报一堆 Usage 信息，很难定位。
-#   本流程在编译后直接 ls 校验，找不到就明确红在「dtb 未产出」这一步。
+#   主流程里 dtb 缺失会一路跑到 mkits 报一堆 Usage，难定位。
+#   本流程编译后直接 ls 校验，找不到就明确红在「dtb 未产出」这一步。
 # ------------------------------------------------------------------------------
 
 name: OpenWrt Test (kernel + dtb only)
@@ -62,7 +69,7 @@ jobs:
         sudo chown $USER:$GROUPS /workdir
 
     # ───────────────────────────────────────────────────────────────────────
-    # ccache 缓存：第二次起工具链复用，整体从 ~40 分钟降到 5-10 分钟
+    # ccache 缓存：第二次起工具链复用，整体明显提速
     # key 带 .config 哈希 —— 改了配置自动失效重编，不会拿到脏缓存
     # ───────────────────────────────────────────────────────────────────────
     - name: Cache ccache
@@ -103,16 +110,18 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
 
-    - name: Make defconfig
-      run: cd openwrt && make defconfig
+    # ★本次唯一改动★ 补回 make download：
+    #   host 工具(m4/flex/bison)与交叉编译器在这里备齐，砍掉会导致
+    #   后面 prepare 触发 olddefconfig 时报 gcc/m4 not found。
+    - name: Make defconfig and download
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \; -exec rm -f {} \;
 
     # ───────────────────────────────────────────────────────────────────────
-    # ★核心★ 先 prepare，再插 dtb-y，再编内核
-    #
-    # 第 1 步 prepare：解压内核源码 + 铺 files-6.12 覆盖层。
-    #   这一步之后 build_dir/.../linux-6.12.x/ 才存在，dts 也才进内核树。
-    # 第 2 步 sed：插 dtb-y。此时插不会被覆盖层盖回去（覆盖已发生完）。
-    # 第 3 步 compile：只编 target/linux，不碰 packages / 镜像打包。
+    # ★核心★ 先 prepare，再插 dtb-y，再编内核（insert 步已验证通过）
     # ───────────────────────────────────────────────────────────────────────
     - name: Prepare kernel tree
       run: |
