@@ -10,7 +10,7 @@
  *  【本文件所有参数的来源分级 —— 改之前先看这里】
  * ============================================================
  *  [A] 实锤：安卓 TTL 串口日志 + adb shell + sys_config.fex + /proc/partitions 互证
- *  [B] 公版推断：内核自带 cs908.dts（同 SoC/同 MII/同 USB 结构的电视盒子）
+ *  [B] 公版推断：内核自带 sina31s-sdk.dts（同 SoC 官方开发板，见 ★改动8）
  *  [C] 未实测：照 A31 参考设计猜的，可能需要改 —— 全文搜 ⚠️ 定位
  *
  *  已知结论清单（[A] 级，不要改）：
@@ -27,7 +27,9 @@
  *                NAND ID = 4b248889（日志实测），chip_cnt=4
  *                nand_p0=0x28010020  nand_p1=0x00eeeeee（fex [nand0_para]）
  *    PHY       : MDIO 地址 0x01，MII 模式（16 根数据线），RTL8201F 系列
- *                实测依据 /sys/bus/mdio_bus/devices/ -> sunxi_gmac-0:01
+ *                实测 /sys/bus/mdio_bus/devices/ -> sunxi_gmac-0:01
+ *                官方 sina31s-sdk.dts 同写 &mdio { phy1: ethernet-phy@1 { reg=<1>; } }
+ *                → 【两条独立来源互证】，地址 1 确定无疑
  *    WiFi      : RTL8188ETV，USB 0bda:0179，走 USB 自动枚举，DTS 零节点
  *                fex wifi_mod_sel=6 / wifi_usbc_id=1 / wifi_power=axp22_aldo1
  *    BT        : RTL8723BS（日志 rtk_btusb），后补；AP6181 为空贴，永远不提
@@ -35,11 +37,16 @@
  *                ★ fex [uart_para] 实锤 + /proc/iomem "01c28000/01c28800 sw_serial"
  *                  原写 PH0/PH1 是错的（见 ★改动1）
  *    IR        : PL04, 电源键码 0x1A, addr 0xFB04（fex [ir_para]）
+ *                ★改动8: 引脚组名改用官方 sina31s 的 s_ir_rx_pin
  *    按键      : PH13 = sprite_gpio0 卡刷键（fex [card_boot]/[boot_init_gpio]）
+ *                ★ 注意：官方 sina31s-sdk.dts 把 PH13 当状态 LED，
+ *                  本机 PH13 是卡刷键、PH09 才是蓝灯 —— 【不要照抄官方 LED】
  *    mmc0      : ★改动7 —— 卡槽【硬件存在但无卡】（日志 "cmd 8 timeout" =
  *                无卡响应；fex [mmc0_para] sdc_used=1 + PA4 CD 脚说明硬件在）。
- *                本文件仍【不声明】（FEL 阶段不需要），但不要再写"物理不存在"。
- *    HDMI      : GM7121 外接编码器，主线无驱动，本文件【不声明】disp/tv
+ *                官方 sina31s-sdk.dts 同写 cd-gpios = <&pio 0 4 GPIO_ACTIVE_LOW>
+ *                （PA4），与本 .fex 完全一致。本文件仍【不声明】（FEL 阶段不需要）。
+ *    HDMI      : GM7121 外接编码器，主线无驱动，本文件【不声明】disp/tv/hdmi
+ *                （官方 sina31s 是 SoC 内置 HDMI，与本机不同，不可照抄 &hdmi）
  *    启动方式  : FEL 推内存 + initramfs，内核自带 rootfs，【不碰 NAND】
  *
  *  分区表（fex [partition] 与 /proc/partitions 双重验证，11/11 全对，单位 MB）：
@@ -57,6 +64,14 @@
  *                                /etc/config/network 里 option macaddr 写死
  *    ★改动5: FEL 启动不跑原厂 U-Boot 的 SID 烧录逻辑，eth0 MAC 可能每次变，
  *            第一阶段就在 OpenWrt 侧写死，【不要】写进 DTS（会与 SID 冲突）
+ *
+ *  ★改动8（第二轮修正，依据官方 sun6i-a31s-sina31s-sdk.dts）：
+ *    1) &gmac pinctrl-0: gmac_pins_mii（猜的）-> gmac_mii_pins（官方实名）
+ *    2) &gmac phy-supply: 自造 reg_vcc3v3 -> &reg_dldo1（AXP221 DLDO1，
+ *       官方 reg_dldo1 名 "vcc-gmac-phy" 3300mV，与 fex gmac_power=axp22_dldo1 吻合）
+ *    3) IR: 删掉自造 ir_pl4_pin，改用官方节点 &ir + s_ir_rx_pin
+ *    4) include sun6i-a31s-sina31s-core.dtsi，以取得 reg_dldo1 / mdio /
+ *       gmac_mii_pins / s_ir_rx_pin 等标签定义（该文件又 include axp221.dtsi）
  *
  *  编译与运行：
  *    1) 放到内核树 arch/arm/boot/dts/allwinner/sun6i-a31s-mars-a31s.dts
@@ -76,12 +91,23 @@
  *    x 曾抄 400M/1568M/16G 的 NAND 分区表 -> 本机实为 768M/2560M，照写会覆盖数据
  *    x uart0 曾写 PH0/PH1 -> 实为 PH20/PH21，照抄会导致内核起来串口全黑
  *    x LED 曾写 PH2（纯猜）-> ★改动4 实为 PH09（U-Boot 翻转实测）
+ *    x GMAC 组名曾写 gmac_pins_mii（猜）-> ★改动8 官方实为 gmac_mii_pins
+ *    x PHY 供电曾挂自造 3.3V -> ★改动8 实为 AXP221 DLDO1
+ *    x 照抄官方 sina31s 的 LED(PH13)/HDMI/OTG -> 本机 PH13 是卡刷键、HDMI 是 GM7121
  *    x dd bs=1M 在安卓 toybox 失效 -> 必须 bs=1024，也不认 status=progress
  * ============================================================
  */
 
 /dts-v1/;
 #include "sun6i-a31s.dtsi"          /* [A] 必须是 a31s，不是 a31 */
+/*
+ * ★改动8: 引入同 SoC 官方开发板的 core dtsi，以取得下列已定义标签：
+ *   &reg_dldo1（AXP221 DLDO1，PHY 供电）、&mdio、&gmac_mii_pins、
+ *   &s_ir_rx_pin、&reg_dcdc1 等（该文件内部还 include 了 axp221.dtsi）
+ * 若编译报 "core dtsi not found"，把本行去掉，并在下方 &pio 里
+ * 自行补 gmac_mii_pins / s_ir_rx_pin 两组引脚定义（内容见文件末尾附录）。
+ */
+#include "sun6i-a31s-sina31s-core.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pinctrl/sun4i-a10.h>
 
@@ -126,7 +152,8 @@
          * [A] 启动参数 —— FEL/initramfs 专用，与 SD/NAND 方案完全不同
          *
          *   console=ttyS0,115200 -> 调试串口（PH20/PH21，接 TTL 那个口）
-         *                           实测原厂 bootargs 同值，可直接沿用
+         *                           实测原厂 bootargs 同值；官方 sina31s
+         *                           stdout-path 也写 115200n8，三处一致
          *   earlyprintk          -> 内核解压阶段就出字，卡死在 early boot 时能定位
          *   loglevel=8           -> 全量日志。第一次跑必开，定稿后再降到 4
          *                           （原厂 Android 用 loglevel=4）
@@ -149,10 +176,10 @@
      *  供电与时钟的固定稳压器
      *  主线 sunxi 驱动（USB PHY / MMC / 音频）会去查这些 supply，
      *  不声明会刷一堆 "XXX supply not found, using dummy regulator" 的噪声。
-     *  这些都是板子上本来就有的固定 3.3V/5V，不是 PMIC 可调轨。
-     *  AXP221 的可调电压（fex: dcdc1~5 / aldo2 / aldo3 / dldo1 / dldo4）
-     *  由 U-Boot + 内核 axp221 驱动按 script.bin 自行配好，
-     *  【不需要】在这里重复声明（U-Boot 日志已逐字确认七路电压）。
+     *  这些是板子上本来就有的固定 3.3V/5V，不是 PMIC 可调轨。
+     *  ★改动8: 网口 PHY 的 supply 已改用真实的 AXP221 DLDO1（见 &reg_dldo1），
+     *  不再用自造的 vcc3v3 顶替 —— 但 reg_vcc3v3 仍保留给其它可能引用它的节点。
+     *  AXP221 其余可调电压由 U-Boot + 内核 axp221 驱动按 script.bin 自行配好。
      * ======================================================== */
     reg_vcc3v3: regulator-vcc3v3 {
         compatible = "regulator-fixed";
@@ -179,10 +206,10 @@
      *    fex [boot_init_gpio] gpio_pin_1 = port:PH13（输出高）
      *    U-Boot 寄存器实读印证: PH CFG1=0x77133372 (PH13 mux=1 输出)
      *                          PH DAT  =0x00002000 (bit13 = 1 高电平)
-     *    PH13 = 7 * 32+13 = 237，全志"按着开机进卡刷"的脚，fex 双重背书。
-     *    原写 PH0（index 224）无任何依据，已废弃。
-     *  若串口出现 "gpio-keys: no keys defined" 或按键无反应，
-     *  去 b_nandb.bin 的 U-Boot env 或 b_nandc.bin 的原厂 DTB 里核对。
+     *    PH13 = 7 * 32+13 = 237。原写 PH0（index 224）无依据，已废弃。
+     *  ⚠️ 官方 sina31s-sdk.dts 把 PH13 用作状态 LED —— 那是开发板的接法，
+     *     本机 PH13 是卡刷键、状态灯是 PH09，【不要照抄官方】。
+     *  若串口出现 "gpio-keys: no keys defined"，去 b_nandc.bin 原厂 DTB 核对。
      * ======================================================== */
     gpio-keys {
         compatible = "gpio-keys";
@@ -198,61 +225,40 @@
 
     /* ========================================================
      *  [A] 状态 LED —— 蓝灯 PH09，U-Boot 实测翻转确认
-     *  ★改动4：PH2 → PH9（原为照 A31 参考设计猜的 [C] 级，已升为 [A] 级）
-     *    实测过程（U-Boot 命令行）：
+     *  ★改动4：PH2 → PH9（原为 [C] 级猜测，已升为 [A] 级）
+     *    实测（U-Boot 命令行）：
      *      mw.l 0x01C2090C 0x00000000  -> 蓝灯灭（PH 全组拉低）
      *      mw.l 0x01C2090C 0x00000200  -> 蓝灯亮（只拉 PH09 高）
-     *    三处互证：
-     *      1) fex [card_boot] ninss_gpio = port:PH9<1><default><default><1>
-     *         末位 <1> = 初始输出高
-     *      2) U-Boot 寄存器实读 PH CFG1 = 0x77133372 (PH09 mux=3/GPIO)
-     *      3) PH DAT bit9 = 1（高电平）
-     *    极性：高电平亮 -> GPIO_ACTIVE_HIGH
-     *    PH09 = 7*32+9 = 233
-     *    /proc/iomem "01c20800-01c2080c : gpio" 印证 GPIO 基址
+     *    三处互证：fex ninss_gpio=PH9<1>末位高 / CFG1=0x77133372 / DAT bit9=1
+     *    极性：高电平亮 -> GPIO_ACTIVE_HIGH；PH09 = 7*32+9 = 233
      *
-     *  红灯：PA/PH/PC/PF/PG/PL 六组扫过全无反应，且 /sys/class/leds 不存在
-     *       （安卓那版没配 LED 驱动），留 TODO，等 OpenWrt 起来后实测补。
-     *       不写节点不影响启动与联网。
+     *  红灯：PA/PH/PC/PF/PG/PL 六组扫过全无反应，/sys/class/leds 不存在，
+     *      留 TODO（可能在 PB/PD/PE，或接 AXP221 CHGLED）。
      * ======================================================== */
     leds {
         compatible = "gpio-leds";
 
         led-status: status {
             function = LED_FUNCTION_STATUS;
-            color = <LED_COLOR_ID_BLUE>;            /* ★改动4: 实测蓝灯，非绿灯 */
+            color = <LED_COLOR_ID_BLUE>;            /* ★改动4: 实测蓝灯 */
             gpios = <&pio 7 9 GPIO_ACTIVE_HIGH>;    /* ★改动4: PH09, index 233 */
             default-state = "on";
-            linux,default-trigger = "heartbeat";    /* 灯亮=内核跑到 pinctrl，免费心跳 */
+            linux,default-trigger = "heartbeat";    /* 灯亮=内核跑到 pinctrl */
         };
     };
 
     /* ========================================================
-     *  [A] 红外接收器
-     *  ★改动3：不再依赖 ir_pins_a 组名，改用下方 &pio 里自定义的 ir_pl4_pin
-     *    fex [ir_para] ir_rx = port:PL04<2><1><default><default>
-     *                   ir_power_key_code = 0x1A, ir_addr_code = 0xFB04
-     *    PL4 = 11 * 32+4 = 356
-     *  ⚠️ function = "ir" 与组名需 grep 核实（见文件末尾 grep 提示）
-     *  遥控器键码表要另配（/etc/rc_keymaps），第一阶段可以先不管。
+     *  ★改动8: 删掉自造的 "ir" 节点内容与自定义 ir_pl4_pin，
+     *  改用官方 sina31s 的写法 —— 只开 &ir 并指向官方引脚组 s_ir_rx_pin。
+     *  兼容性由 core.dtsi 提供的 &ir 节点保证（compatible/clocks/resets 已在内）。
+     *  fex [ir_para] ir_rx = port:PL04<2>, 电源键码 0x1A, addr 0xFB04
+     *  遥控器键码表另配 /etc/rc_keymaps，第一阶段可不管。
      * ======================================================== */
-    ir {
-        compatible = "allwinner,sun6i-a31-ir";
-        clocks = <&ccu CLK_BUS_IR>, <&ccu CLK_IR>;
-        clock-names = "ahb", "mod";
-        pinctrl-names = "default";
-        pinctrl-0 = <&ir_pl4_pin>;                  /* ★改动3: PL04, 不再用 ir_pins_a */
-        resets = <&ccu RST_BUS_IR>;
-        status = "okay";
-    };
 };
 
 /* ============================================================
- *  ★新增：自定义引脚组
- *  用途：绕开"sun6i-a31s.dtsi 里到底有没有这个组名 / 拼错没拼错"的不确定性。
- *  三个 function 字符串必须对上 sun6i-a31s-pinctrl.c 里 sunxi_function 表的拼写：
- *    grep -n '"uart0"\|"ir"\|gmac' drivers/pinctrl/sunxi/pinctrl-sun6i-a31s.c
- *  若报 -EINVAL 或 dtc 警告，就是这里拼错了，按 grep 结果改。
+ *  ★改动8: 自定义引脚组只保留 UART0（官方 core dtsi 未必有 PH20 变体）
+ *  IR 与 GMAC 的引脚组一律使用官方定义：s_ir_rx_pin / gmac_mii_pins
  * ============================================================ */
 &pio {
     /* ★改动1 配套：UART0 走 PH20/PH21 */
@@ -260,21 +266,13 @@
         pins = "PH20", "PH21";      /* 7 * 32+20=244(TX), 7 * 32+21=245(RX) */
         function = "uart0";
     };
-
-    /* ★改动3 配套：IR 接收走 PL04 */
-    ir_pl4_pin: ir-pl4-pin {
-        pins = "PL4";               /* 11 * 32+4 = 356 */
-        function = "ir";
-    };
 };
 
 /* ============================================================
  *  UART0 —— 调试串口
- *  [A] 必须 okay，否则内核起来后一片黑，出事没法诊断
+ *  [A] 必须 okay，否则内核起来后一片黑
  *  ★改动1：pinctrl 从 uart0_ph_pins（PH0/PH1）换成 uart0_ph20_pins（PH20/PH21）
- *    依据 fex [uart_para] uart_debug_tx=PH20<2> / uart_debug_rx=PH21<2>
- *    /proc/iomem "01c28000-01c280ff : sw_serial" / "01c28800 : sw_serial" 印证
- *    A31s 上 PH0/PH1 不是 UART0 的复用脚，原写法会让串口彻底没输出。
+ *    依据 fex [uart_para] + /proc/iomem "sw_serial" 双证
  * ============================================================ */
 &uart0 {
     pinctrl-names = "default";
@@ -288,65 +286,78 @@
  *  [A] 实测依据：
  *      /sys/class/mdio_bus/        -> sunxi_gmac-0
  *      /sys/bus/mdio_bus/devices/  -> sunxi_gmac-0:01   ← PHY 地址 = 1
- *      驱动 "Generic PHY"          -> 标准 Clause 22 设备
- *      /proc/iomem "01c30000-01c31054 : sunxi_gmac" 印证 GMAC 基址
- *      fex [gmac_para]：gmac_interface = 1 (MII)，TXD0~7/RXD0~7 共 16 根数据线
- *                       gmac_power = "axp22_dldo1"  ← PHY 由 AXP221 DLDO1 供电
- *      （RMII 只有 2+2 根数据线，所以确定是 MII 不是 RMII）
+ *      /proc/iomem "01c30000-01c31054 : sunxi_gmac" 印证基址
+ *      fex [gmac_para] gmac_interface=1 (MII，16 根数据线，非 RMII)
+ *                      gmac_power = "axp22_dldo1"
+ *  [B] 官方 sina31s-sdk.dts 同款写法（★改动8 采用）：
+ *      pinctrl-0 = <&gmac_mii_pins> / phy-mode = "mii" /
+ *      phy-handle = <&phy1> / phy-supply = <&reg_dldo1>
  *
- *  ⚠️ 若 ifconfig eth0 up 报 "PHY connection failure"，【一次只动一个变量】：
- *    第一步：确认 gmac_pins_mii 这个组名在 a31s.dtsi 里真的存在
- *            （名字可能是 gmac_mii_pins / gmac_pins / gmac_mii_pins_a）
- *    第二步：才去试 phy-mode = "rmii" + 对应 rmii 引脚组
- *    第三步：查 AXP221 DLDO1 是否真的上电（cat /sys/class/regulator/*/name）
+ *  若 ifconfig eth0 up 报 "PHY connection failure"，【一次只动一个变量】：
+ *    1) 确认 gmac_mii_pins 在 core dtsi 里存在（grep 该文件）
+ *    2) 才去试 phy-mode = "rmii" + rmii 引脚组
+ *    3) 查 AXP221 DLDO1 是否上电（cat /sys/class/regulator/*/name）
  * ============================================================ */
 &gmac {
     pinctrl-names = "default";
-    pinctrl-0 = <&gmac_pins_mii>;                   /* ⚠️ 组名需 grep 核实 */
+    pinctrl-0 = <&gmac_mii_pins>;                   /* ★改动8: 官方实名 */
     phy-mode = "mii";                               /* [A] 16 根数据线 = MII */
-    phy-handle = <&ethphy>;
-    phy-supply = <&reg_vcc3v3>;                     /* [A] fex: gmac_power = axp22_dldo1 */
+    phy-handle = <&phy1>;                           /* ★改动8: 与官方标签对齐 */
+    phy-supply = <&reg_dldo1>;                      /* ★改动8: AXP221 DLDO1 */
+    status = "okay";
+};
 
-    mdio {
-        #address-cells = <1>;
-        #size-cells = <0>;
-
-        ethphy: ethernet-phy@1 {
-            reg = <1>;                              /* [A] 实测地址，非 0 */
-            compatible = "ethernet-phy-ieee802.3-c22";  /* [A] 通用 Clause 22 */
-            /* 确认是 RTL8201F 后可换成精确匹配（功能等价）：
-             *   compatible = "ethernet-phy-id001c.c915"; */
-        };
+/*
+ * ★改动8: PHY 节点移入官方 &mdio 总线（标签由 core.dtsi 提供）
+ * 官方与本机实测同写 reg = <1>，两源互证
+ */
+&mdio {
+    phy1: ethernet-phy@1 {
+        reg = <1>;                                  /* [A] 实测地址，非 0 */
+        compatible = "ethernet-phy-ieee802.3-c22";  /* 通用 Clause 22 */
+        /* 确认 RTL8201F 后可换：compatible = "ethernet-phy-id001c.c915"; */
     };
+};
 
+/*
+ * ★改动8: AXP221 DLDO1 = 网口 PHY 供电（官方名 "vcc-gmac-phy" 3300mV）
+ * 与 fex gmac_power = "axp22_dldo1" 完全吻合 —— 官方 + fex 双证
+ */
+&reg_dldo1 {
+    regulator-name = "vcc-gmac-phy";
+    regulator-min-microvolt = <3300000>;
+    regulator-max-microvolt = <3300000>;
+};
+
+/* ============================================================
+ *  ★改动8: IR —— 官方写法，引脚组 s_ir_rx_pin 由 core dtsi 定义
+ * ============================================================ */
+&ir {
+    pinctrl-names = "default";
+    pinctrl-0 = <&s_ir_rx_pin>;                     /* ★改动8: 官方组名 */
     status = "okay";
 };
 
 /* ============================================================
  *  USB —— WiFi 的生命线
  *
- *  [A] RTL8188ETV 挂在 USB 上（0bda:0179），USB 不起来 WiFi 就没戏。
- *  日志显示 WiFi 在总线 1（uevent: 1-1:1.0）-> 对应 EHCI1/OHCI1。
- *  fex [wifi_para] wifi_usbc_id = 1 / wifi_mod_sel = 6 (rtl8188eu) 印证。
+ *  [A] RTL8188ETV 挂 USB（0bda:0179），USB 不起来 WiFi 就没戏。
+ *  日志显示 WiFi 在总线 1 -> EHCI1/OHCI1。fex wifi_usbc_id=1 印证。
+ *  官方 sina31s 也开 ehci0/ehci1/ohci1，策略互相印证（本文件多开 ohci0，
+ *  全速兼容、无设备不枚举，无副作用）。
  *
- *  策略：ehci0/1 + ohci0/1 全开。多开无副作用（没设备就不枚举），
- *        能避免"通道编号判断错导致 WiFi 不识别"这种低级返工。
- *        ehci2/ohci2 在 A31 上对应 USB-OTG/HSIC，本机用途不明，先不动。
- *
- *  [A] VBUS 供电（已从 [C] 升级）：
- *      fex [usbc0]/[usbc1] usb_drv_vbus_gpio = （空）-> PMU 直供，不靠 GPIO
- *      fex [usbc2]         usb_drv_vbus_gpio = port:PC27  -> 只有 USB2 用 GPIO
- *      所以 USB0/1 写常开 5V 是对的。
+ *  [A] VBUS：fex [usbc0]/[usbc1] usb_drv_vbus_gpio 为空 -> PMU 直供；
+ *      只有 [usbc2] 用 PC27。故 USB0/1 写常开 5V 是对的。
  *      若 lsusb 看不到 0bda:0179，九成是 AXP221 ALDO1（wifi_power）没开，
- *      去查 regulator，【不要】盲写 GPIO 上去（写错脚会把 USB 口电搞反）。
+ *      【不要】盲写 GPIO（写错脚会把 USB 口电搞反）。
  * ============================================================ */
 &usbphy {
     status = "okay";
-    usb1_vbus-supply = <&reg_vcc5v>;                /* [A] fex: usbc0/1 VBUS 由 PMU 直供 */
+    usb1_vbus-supply = <&reg_vcc5v>;                /* [A] PMU 直供 */
 };
 
 &ehci0 { status = "okay"; };    /* [A] USB 通道 0 高速 */
-&ohci0 { status = "okay"; };    /* [A] USB 通道 0 全速（USB1.1 设备兼容） */
+&ohci0 { status = "okay"; };    /* [A] USB 通道 0 全速（本文件额外开的） */
 &ehci1 { status = "okay"; };    /* [A] USB 通道 1 高速 —— WiFi 在这条上 */
 &ohci1 { status = "okay"; };    /* [A] USB 通道 1 全速 */
 
@@ -355,65 +366,72 @@
  * ============================================================
  *
  *  【nand / nandc 控制器 + 分区表】—— 本阶段一行都不写
- *     NAND 里是完整可用的安卓，5 份备份（nanda/b/c/d/f/g）已在电脑上。
- *     主线 sunxi-nand 驱动需要正确的 nand_para，而且【极性敏感】：
- *     一旦驱动挂上并扫描，就可能触发擦写/坏块表更新，直接毁掉原系统。
- *     参数已备齐（页8192 / OOB640 / 块2MiB / ECC20bit@1024B / 4片选 /
- *     nand_p0=0x28010020 / nand_p1=0x00eeeeee），
- *     等 FEL 内存方案全绿、且做完 b_nandc.bin 的原厂 DTB 比对之后，
- *     再单独开一个 nand-part.dtsi 挂进来。届时分区表照抄（★改动6 已校准）：
+ *     NAND 里是完整可用的安卓，备份已在电脑上。主线 sunxi-nand 驱动
+ *     【极性敏感】，一旦挂上扫描可能触发擦写/坏块表更新，直接毁原系统。
+ *     参数已备齐（页8192/OOB640/块2MiB/ECC20bit@1024B/4片选/
+ *     nand_p0=0x28010020 / nand_p1=0x00eeeeee），等 FEL 方案全绿后
+ *     单独开 nand-part.dtsi 挂进来。分区照抄（★改动6 已校准）：
  *       bootloader 16M / env 16M / boot 16M / system 768M / misc 16M /
  *       recovery 32M / private 16M / databk 128M / data 2560M /
  *       cache 32M(★非512M) / UDISK 剩余(约 9714M)
  *
- *  【mmc0 / SD 卡槽】—— ★改动7：卡槽硬件存在，但本阶段仍不声明
- *     开机日志: [mmc] mmc 0 cmd 8 timeout -> Card did not respond
- *              -> 这是"无卡"，不是"物理不存在"（fex sdc_used=1 + PA4 CD 脚）
- *     声明它会让内核一直轮询空卡槽，rootfs 找不到直接 panic。
- *     等落 NAND 或插 SD 启动阶段再开：mmc0 = PF0~PF5, cd = PA4。
+ *  【mmc0 / SD 卡槽】—— ★改动7：卡槽硬件在，但无卡，本阶段仍不声明
+ *     日志 "mmc 0 cmd 8 timeout" = 无卡响应；fex sdc_used=1 + PA4 CD 脚。
+ *     官方 sina31s-sdk.dts 同写 cd-gpios = <&pio 0 4 GPIO_ACTIVE_LOW>（PA4）。
+ *     声明它会让内核轮询空卡槽，rootfs 找不到直接 panic。
+ *     等落 NAND / 插 SD 启动再开：
+ *       &mmc0 { vmmc-supply = <&reg_dcdc1>; bus-width = <4>;
+ *               cd-gpios = <&pio 0 4 GPIO_ACTIVE_LOW>; status = "okay"; };
  *
- *  【mmc1 / SDIO】—— fex 标 sdc_isio=1（PG00~PG05），但 RTL8188EU 走 USB，
- *     这条总线本机实际挂了什么未知。等原厂 DTB 出来再定，先不声明。
+ *  【mmc1 / SDIO】—— fex 标 sdc_isio=1（PG00~PG05），但 WiFi 走 USB，
+ *     本机该总线挂了什么未知，等原厂 DTB 出来再定。
  *
- *  【disp / hdmi / tv / lcd】—— 主线无驱动
- *     HDMI 是外接 GM7121 编码器（fex [tv0_para] tv_module_name="gm7121"），
- *     不是 SoC 内置 HDMI PHY，主线无 GM7121 驱动，写了也不出图。
- *     U-Boot 日志: boot_disp.output_type=3 / output_mode=5 / auto_hpd=1
- *                 "[TV] gm7121_module_init finish!"
- *     fex screen0_output_type=3 / mode=5 -> 720p60，仅安卓 BSP 有效。
+ *  【disp / hdmi / tv / lcd】—— 主线无驱动，且本机与官方不同
+ *     HDMI 是外接 GM7121 编码器（fex tv_module_name="gm7121"），
+ *     【不是】SoC 内置 HDMI PHY。官方 sina31s 的 &hdmi / hdmi-connector /
+ *     &de 是开发板内置 HDMI，【不可照抄】，写了也不出图。
+ *     U-Boot 日志: output_type=3 / mode=5 / "[TV] gm7121_module_init finish!"
  *     调试期只用 TTL 串口（PH20/PH21）。
  *
+ *  【codec / spdif / lradc 按键】—— 官方 sina31s 有，本机未验证
+ *     fex 里 audio/lradc 相关段未实锤，第二阶段再验，先不加。
+ *
  *  【BT / RTL8723BS】—— 后补
- *     fex [bt_para] bt_used=1 / bt_uart_id=2 -> UART2 (PG06/PG07)。
- *     日志有 rtk_btusb 加载记录，走 USB 自动枚举，DTS 零节点，
- *     只需 .config 勾 kmod-btrtl + 放 rtl8723b 固件。第二阶段再弄。
+ *     fex bt_uart_id=2 -> UART2 (PG06/PG07)。日志有 rtk_btusb，
+ *     走 USB 枚举，DTS 零节点，只需 .config 勾 kmod-btrtl + 固件。
  *
  *  【AP6181 / 触摸屏 / 摄像头 / 3G / G-sensor】—— 空贴或未装配
- *     fex 里 rtp/ctp/lcd/vip/3g/gsensor 全是 used=0，但参数齐全
- *     （这是 A31 BOX 公版满配模板）。一个字都不要加。
+ *     fex 里 rtp/ctp/lcd/vip/3g/gsensor 全 used=0，一个字都不要加。
  *
- *  【AXP221 PMIC 节点】—— 暂不手写
- *     主线有 axp209/axp221 驱动，挂 twi1@34 即可，但 regulator 映射要
- *     照原厂 DTB 抄，手写容易把 DLDO1(网口)/ALDO1(WiFi) 配错导致外设没电。
- *     U-Boot 日志已确认 PMU: AXP221 found + 七路电压（见文件头）。
- *     等 b_nandc.bin 挖出 DTB 后补 &twi1 { axp221@34 { ... } }。
+ *  【AXP221 PMIC 完整节点】—— ★改动8 只恢复了 PHY 所需的 &reg_dldo1，
+ *     完整 regulator 映射仍等 b_nandc.bin 原厂 DTB 比对后再补。
+ *     手写容易把 DLDO1(网口)/ALDO1(WiFi) 配错导致外设没电。
  *
  *  【红灯 GPIO】—— TODO
- *     PA/PH/PC/PF/PG/PL 六组只写 DAT 扫过全无反应；/sys/class/leds 不存在。
- *     要么在 PB/PD/PE（需先读 CFG 再安全翻转），要么接 AXP221 CHGLED
- *     （插 USB 充电时若亮/闪即是，届时改用 axp221-chgled 而非 gpio-leds）。
+ *     六组扫过无反应 + /sys/class/leds 不存在。要么在 PB/PD/PE，
+ *     要么接 AXP221 CHGLED（插 USB 充电时若亮/闪即是，届时用
+ *     axp221-chgled 而非 gpio-leds）。
  * ============================================================
  */
 
 /*
- * ===== 编译前必做的 grep 核实（组名拼错会 -EINVAL）=====
- * 在内核源码树里跑：
- *   grep -n '"uart0"\|"ir"\|gmac' drivers/pinctrl/sunxi/pinctrl-sun6i-a31s.c
- * 重点核对三处 function / group 名：
- *   - uart0_ph20_pins  -> "uart0" + PH20/PH21 是否属该组
- *   - ir_pl4_pin       -> "ir"     + PL4
- *   - &gmac gmac_pins_mii -> 组名可能是 gmac_mii_pins / gmac_pins / gmac_mii_pins_a
- * 若 dtc/驱动报 -EINVAL，按 grep 实际结果改，不要凭猜。
+ * ===== 附录：若不 include core dtsi，需自行补的两组引脚 =====
+ * （内容取自官方 sun6i-a31s-sina31s-core.dtsi / pinctrl 定义）
+ *
+ * &pio {
+ *     gmac_mii_pins: gmac-mii-pins {
+ *         pins = "PA0", "PA1", "PA2", "PA3", "PA5", "PA6", "PA7",
+ *                "PA8", "PA9", "PA10", "PA11", "PA12", "PA13",
+ *                "PA14", "PA15", "PA16";
+ *         function = "gmac";
+ *     };
+ *
+ *     s_ir_rx_pin: ir-rx-pin {
+ *         pins = "PL4";
+ *         function = "ir";
+ *     };
+ * };
+ * ⚠️ 上面 pins 列表请照内核树实际定义核对后再用，不要直接照抄本注释。
  *
  * ===== 配套：OpenWrt 侧（不进 DTS）=====
  * /etc/config/network 里写死 eth0 MAC（★改动5）：
