@@ -87,6 +87,73 @@ jobs:
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
+    # =========================================================================
+    # ★本次唯一新增 step★ Inject MARS A31s dtb-y
+    # -------------------------------------------------------------------------
+    # 为什么必须放在这里（Download package 之后 / Compile 之前）:
+    #   1) diy-part2.sh 执行时（Load custom configuration 步）内核树还没解压，
+    #      实测日志 KDIR=空，sed 必然跳过 —— 不是脚本 bug，是时机不对。
+    #   2) make defconfig 跑完之后，build_dir/.../linux-6.12.x/ 已存在，
+    #      内核 dts 目录的 Makefile 已就位，这时候插 dtb-y 才来得及被编译。
+    #   3) 早于 make -j，所以插进去的条目会被真正编译成 .dtb。
+    #
+    # 为什么不用 kernel patch:
+    #   901-mars-a31s-dts.patch 已删除。原因：patch 文件头写了 # 注释块，
+    #   patch 命令把注释当文件名 -> can't find file to patch input line 25；
+    #   且上下文行与内核 6.12.119 原文不符 -> malformed patch at line 66。
+    #   sed 直插无上下文匹配，不会 Hunk FAILED。
+    #
+    # 为什么直接写 dtb-y += 而不挂 CONFIG_MACH_...:
+    #   挂 CONFIG 需要在 Kconfig 里加符号，少一环失败点。无条件编译这条
+    #   dts 对单设备固件没有副作用。
+    #
+    # 容错原则: 任何一步找不到都 exit 0，不致命。
+    #   找不到时让编译继续，报错信息会更准确（mkits 会明确指出缺哪个 dtb）。
+    # =========================================================================
+    - name: Inject MARS A31s dtb-y
+      run: |
+        cd openwrt
+        DTS_NAME="sun6i-a31s-mars-a31s"
+        DTS_SRC="$GITHUB_WORKSPACE/dts/${DTS_NAME}.dts"
+
+        # 1) 定位内核源码树（通配符匹配不到时 || true 防止 set -e 杀掉流程）
+        KDIR="$(ls -d build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-sunxi_cortexa7/linux-6.12.* 2>/dev/null | head -1)" || true
+        if [ -z "$KDIR" ] || [ ! -d "$KDIR/arch/arm/boot/dts/allwinner" ]; then
+          echo "[inject] 内核树尚未就绪（KDIR=${KDIR:-空}），跳过 dtb-y 插入。"
+          echo "[inject] 编译阶段会报 mkits 找不到 .dtb，属预期内的兜底提示。"
+          exit 0
+        fi
+        K_DTS_DIR="$KDIR/arch/arm/boot/dts/allwinner"
+        echo "[inject] 内核 dts 目录 = $K_DTS_DIR"
+
+        # 2) 兜底拷贝：files-6.12 覆盖层在 make 阶段才铺，
+        #    这里若发现 dts 还没进内核树，直接补一份，保证编译有源文件。
+        if [ ! -f "$K_DTS_DIR/${DTS_NAME}.dts" ]; then
+          if [ -f "$DTS_SRC" ]; then
+            cp -f "$DTS_SRC" "$K_DTS_DIR/${DTS_NAME}.dts"
+            echo "[inject] 已兜底拷入 dts -> $K_DTS_DIR/${DTS_NAME}.dts"
+          else
+            echo "[inject] 警告：仓库里也找不到 $DTS_SRC，仅插 Makefile 条目。"
+          fi
+        else
+          echo "[inject] dts 已在内核树中，无需拷贝。"
+        fi
+
+        # 3) 插 Makefile 条目（幂等：已有则跳过，反复跑不会重复插）
+        if grep -q "${DTS_NAME}.dtb" "$K_DTS_DIR/Makefile"; then
+          echo "[inject] Makefile 已含 ${DTS_NAME}.dtb，跳过（幂等）"
+        else
+          sed -i "0,/^dtb-y/s|^dtb-y|dtb-y += ${DTS_NAME}.dtb\n\ndtby-|" "$K_DTS_DIR/Makefile"
+          echo "[inject] 已插入 dtb-y 条目 -> $K_DTS_DIR/Makefile"
+        fi
+
+        # 4) 回显确认，方便在日志里一眼定性
+        echo "[inject] ---- Makefile 前 6 行 ----"
+        head -6 "$K_DTS_DIR/Makefile"
+        echo "[inject] ---- mars 相关文件 ----"
+        ls -l "$K_DTS_DIR/" | grep -i 'mars' || echo "(暂无 mars 文件)"
+        exit 0
+
     - name: Compile the firmware
       id: compile
       run: |
