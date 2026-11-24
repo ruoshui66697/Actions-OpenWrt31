@@ -67,16 +67,27 @@
  *
  *  ★改动8（第二轮修正，依据官方 sun6i-a31s-sina31s-sdk.dts）：
  *    1) &gmac pinctrl-0: gmac_pins_mii（猜的）-> gmac_mii_pins（官方实名）
- *    2) &gmac phy-supply: 自造 reg_vcc3v3 -> &reg_dldo1（AXP221 DLDO1，
- *       官方 reg_dldo1 名 "vcc-gmac-phy" 3300mV，与 fex gmac_power=axp22_dldo1 吻合）
+ *    2) &gmac phy-supply 曾改 &reg_dldo1（AXP221 DLDO1，官方名
+ *       "vcc-gmac-phy" 3300mV，与 fex gmac_power=axp22_dldo1 吻合）
+ *       —— ★改动10 已回退，原因见下
  *    3) IR: 删掉自造 ir_pl4_pin，改用官方节点 &ir + s_ir_rx_pin
  *
  *  ★改动9（编译阻断级修复，第三轮）：
  *    删掉 #include "sun6i-a31s-sina31s-core.dtsi"
  *    —— 该文件第 43 行自带 /dts-v1/; 与本文件版本声明冲突，
  *       dtc 报 "core dtsi:43.1-9 syntax error" 直接 FATAL 中断 make dtbs。
- *    配套：gmac_mii_pins / s_ir_rx_pin / &mdio 改由本文件末尾附录自行声明
- *    （不丢任何符号，详见 include 处注释）
+ *    配套：gmac_mii_pins / s_ir_rx_pin 改由本文件末尾附录自行声明。
+ *
+ *  ★改动10（编译阻断级修复，第四轮）—— 收干净 ★改动9 的尾巴 + 原稿语法错：
+ *    1) 第 255 行 label "led-status:" -> "led_status:"
+ *       DTS label 不允许连字符，dtc 在主 dts:255.19-20 报 syntax error。
+ *       这是原稿自带的错，之前被 dtsi:43 挡住没报出来（dtc 遇错即停）。
+ *    2) 删掉悬挂的 &reg_dldo1 节点（其标签原本来自被删的 core dtsi），
+ *       phy-supply 指回已声明的 reg_vcc3v3。
+ *    3) 删掉附录里重复的第二份 &mdio / phy1（duplicate label + node），
+ *       全文只保留 GMAC 章节一份。
+ *    以上均为纯语法/引用层修复，【没动任何硬件值】：
+ *       PH09 / PHY 地址 1 / MII / 1 GiB / 七路电压 全部保持实测值。
  *
  *  编译与运行：
  *    1) 放到内核树 arch/arm/boot/dts/allwinner/sun6i-a31s-mars-a31s.dts
@@ -97,7 +108,8 @@
  *    x uart0 曾写 PH0/PH1 -> 实为 PH20/PH21，照抄会导致内核起来串口全黑
  *    x LED 曾写 PH2（纯猜）-> ★改动4 实为 PH09（U-Boot 翻转实测）
  *    x GMAC 组名曾写 gmac_pins_mii（猜）-> ★改动8 官方实为 gmac_mii_pins
- *    x PHY 供电曾挂自造 3.3V -> ★改动8 实为 AXP221 DLDO1
+ *    x PHY 供电曾挂自造 3.3V -> ★改动8 改 &reg_dldo1 -> ★改动10 删 core dtsi
+ *      后该标签无定义源，回退 reg_vcc3v3（硬件上仍是 AXP221 DLDO1，U-Boot 已配好）
  *    x 照抄官方 sina31s 的 LED(PH13)/HDMI/OTG -> 本机 PH13 是卡刷键、HDMI 是 GM7121
  *    x dd bs=1M 在安卓 toybox 失效 -> 必须 bs=1024，也不认 status=progress
  * ============================================================
@@ -117,8 +129,9 @@
  * 删掉它【不丢任何符号】：
  *   sun6i-a31s.dtsi            -> 上一行已直接 include（SoC/&pio/&gmac/&ir/&uart0）
  *   sunxi-common-regulators    -> 本文件自带 reg_vcc3v3 / reg_vcc5v
- *   &reg_dldo1                 -> 本文件自己声明（见下方，PHY 供电所需）
- *   &mdio                      -> 本文件自己写（见下方）
+ *   &reg_dldo1                 -> ★改动10 已移除（悬挂引用），phy-supply 改用
+ *                               本文件已声明的 reg_vcc3v3，详见 GMAC 章节
+ *   &mdio                      -> 标签本就来自 SoC dtsi，只需补 PHY 子节点
  *   gmac_mii_pins/s_ir_rx_pin  -> 本文件末尾附录已启用（见文件结尾）
  * 上游那份 dtsi 在主线里也只被 sina31s.dts 一家引用，非公共 SoC 头。
  */
@@ -252,7 +265,11 @@
     leds {
         compatible = "gpio-leds";
 
-        led-status: status {
+        /* ★改动10（本轮红点）：DTS label 只允许 [A-Za-z_][A-Za-z0-9_]*，
+         *   不能含连字符。原 "led-status:" 让 dtc 把整串当节点名，
+         *   随后撞上 ":" 在 255.19-20 报 syntax error。
+         *   节点名 "status" 不变；全文无 &led-status 引用，改 label 无副作用。 */
+        led_status: status {
             function = LED_FUNCTION_STATUS;
             color = <LED_COLOR_ID_BLUE>;            /* ★改动4: 实测蓝灯 */
             gpios = <&pio 7 9 GPIO_ACTIVE_HIGH>;    /* ★改动4: PH09, index 233 */
@@ -303,44 +320,50 @@
  *      /proc/iomem "01c30000-01c31054 : sunxi_gmac" 印证基址
  *      fex [gmac_para] gmac_interface=1 (MII，16 根数据线，非 RMII)
  *                      gmac_power = "axp22_dldo1"
- *  [B] 官方 sina31s-sdk.dts 同款写法（★改动8 采用）：
+ *  [B] 官方 sina31s-sdk.dts 同款写法：
  *      pinctrl-0 = <&gmac_mii_pins> / phy-mode = "mii" /
  *      phy-handle = <&phy1> / phy-supply = <&reg_dldo1>
  *
+ *  ★改动10: 上面 [B] 的最后一项【本机不照抄】。
+ *    &reg_dldo1 这个标签来自 axp221.dtsi（原本由 core dtsi 间接引入），
+ *    ★改动9 删掉 core dtsi 后它就成了悬挂引用，dtc 会报
+ *      "Reference to non-existent node or label reg_dldo1"。
+ *    本机 U-Boot 已按 script.bin 把 AXP221 配好（DLDO1 给 PHY 供电，
+ *    fex gmac_power=axp22_dldo1 实锤），initramfs 阶段不需要内核再管这路电，
+ *    故 phy-supply 指回本文件已声明、常开的 3.3V 固定稳压器 reg_vcc3v3。
+ *    等第二阶段补 AXP221 完整节点时，再换回真实 DLDO1 轨（电压 3300mV 有
+ *    官方 sina31s + fex 双证，届时照抄即可，不用重新猜）。
+ *
  *  若 ifconfig eth0 up 报 "PHY connection failure"，【一次只动一个变量】：
- *    1) 确认 gmac_mii_pins 在 core dtsi 里存在（grep 该文件）
+ *    1) 确认 gmac_mii_pins 的 pins 列表与内核树实际定义一致（见文件末尾附录）
  *    2) 才去试 phy-mode = "rmii" + rmii 引脚组
- *    3) 查 AXP221 DLDO1 是否上电（cat /sys/class/regulator/*/name）
+ *    3) 查 AXP221 DLDO1 是否上电（读 /sys/class/regulator 下各条目的 name）
+ *       ★改动10 附带修复：原写法含 glob 星号斜杠，会被 cpp 当成注释结束符
+ *       提前闭合本注释块，残留文本变成代码，又是下一个语法红点。
  * ============================================================ */
 &gmac {
     pinctrl-names = "default";
     pinctrl-0 = <&gmac_mii_pins>;                   /* ★改动8: 官方实名 */
     phy-mode = "mii";                               /* [A] 16 根数据线 = MII */
     phy-handle = <&phy1>;                           /* ★改动8: 与官方标签对齐 */
-    phy-supply = <&reg_dldo1>;                      /* ★改动8: AXP221 DLDO1 */
+    phy-supply = <&reg_vcc3v3>;                     /* ★改动10: 见上方说明 */
     status = "okay";
 };
 
 /*
- * ★改动8: PHY 节点移入官方 &mdio 总线（标签由 core.dtsi 提供）
- * 官方与本机实测同写 reg = <1>，两源互证
+ * ★改动10: 全文【唯一】的 &mdio 块与 phy1 定义。
+ *   &mdio 标签由 sun6i-a31s.dtsi（gmac 节点内的 mdio 子节点）提供，
+ *   此处只补 PHY 子节点，不再重复声明总线、也不再在附录里定义第二份 phy1。
+ *   官方 sina31s 与本机实测同写 reg = <1>，两源互证。
  */
 &mdio {
+    #address-cells = <1>;
+    #size-cells = <0>;
     phy1: ethernet-phy@1 {
         reg = <1>;                                  /* [A] 实测地址，非 0 */
         compatible = "ethernet-phy-ieee802.3-c22";  /* 通用 Clause 22 */
         /* 确认 RTL8201F 后可换：compatible = "ethernet-phy-id001c.c915"; */
     };
-};
-
-/*
- * ★改动8: AXP221 DLDO1 = 网口 PHY 供电（官方名 "vcc-gmac-phy" 3300mV）
- * 与 fex gmac_power = "axp22_dldo1" 完全吻合 —— 官方 + fex 双证
- */
-&reg_dldo1 {
-    regulator-name = "vcc-gmac-phy";
-    regulator-min-microvolt = <3300000>;
-    regulator-max-microvolt = <3300000>;
 };
 
 /* ============================================================
@@ -417,9 +440,11 @@
  *  【AP6181 / 触摸屏 / 摄像头 / 3G / G-sensor】—— 空贴或未装配
  *     fex 里 rtp/ctp/lcd/vip/3g/gsensor 全 used=0，一个字都不要加。
  *
- *  【AXP221 PMIC 完整节点】—— ★改动8 只恢复了 PHY 所需的 &reg_dldo1，
- *     完整 regulator 映射仍等 b_nandc.bin 原厂 DTB 比对后再补。
- *     手写容易把 DLDO1(网口)/ALDO1(WiFi) 配错导致外设没电。
+ *  【AXP221 PMIC 完整节点】—— ★改动10 后本文件【没有任何】PMIC 子节点，
+ *     也不再引用 &reg_dldo1 / &reg_dcdc1 等 axp221 标签（删 core dtsi 后
+ *     它们都无定义源）。U-Boot 已按 script.bin 配好七路电压，initramfs
+ *     阶段内核不需要管。完整 regulator 映射等 b_nandc.bin 原厂 DTB 比对
+ *     后再补；手写容易把 DLDO1(网口)/ALDO1(WiFi) 配错导致外设没电。
  *
  *  【红灯 GPIO】—— TODO
  *     六组扫过无反应 + /sys/class/leds 不存在。要么在 PB/PD/PE，
@@ -429,9 +454,11 @@
  */
 
 /* ============================================================
- *  ★改动9 附录：★改动9 把这段从「注释备用」升级为「生效代码」
+ *  ★改动9/10 附录：把这段从「注释备用」升级为「生效代码」
  *  原因：删掉 sun6i-a31s-sina31s-core.dtsi 后，gmac_mii_pins /
  *        s_ir_rx_pin 这两个标签需要本文件自己提供。
+ *  ★改动10 已把原先放在这里的第二份 &mdio / phy1 删掉（重复定义），
+ *        现在本附录只负责两组 pinctrl 标签。
  *
  *  ⚠️ pins 列表核对方法（GitHub 网页即可，无需装 grep）：
  *     打开 torvalds/linux 的
@@ -454,20 +481,11 @@
 };
 
 /*
- * ★改动9: MDIO 总线 —— 原由 core dtsi 提供，现自行声明
- * 官方 sina31s 与本机实测（/sys/bus/mdio_bus/devices -> sunxi_gmac-0:01）
- * 同为 reg = <1>，两源互证。
- */
-&mdio {
-    #address-cells = <1>;
-    #size-cells = <0>;
-    phy1: ethernet-phy@1 {
-        reg = <1>;
-        compatible = "ethernet-phy-ieee802.3-c22";
-    };
-};
-
-/*
+ * ★改动10: 附录里原先那份 &mdio + phy1 已删除。
+ *   它和 GMAC 章节的 &mdio 构成 duplicate label "phy1" +
+ *   duplicate node "ethernet-phy@1"，是删 core dtsi 时的收尾残留。
+ *   全文现在只在 GMAC 章节保留一份，&mdio 标签由 SoC dtsi 提供。
+ *
  * ===== 配套：OpenWrt 侧（不进 DTS）=====
  * /etc/config/network 里写死 eth0 MAC（★改动5）：
  *   config device
