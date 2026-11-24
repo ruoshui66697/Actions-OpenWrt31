@@ -1,0 +1,203 @@
+#
+# File: .github/workflows/openwrt-test.yml
+# Description: OpenWrt 测试流程 —— 只验内核 + dtb，不出完整固件
+#
+# 与主流程 openwrt-bulder.yml 的区别:
+#   主流程 : 全量编译 + 打包 + 上传 release，约 117 分钟/次
+#   本流程 : 只跑到 target/linux/compile（内核+dtb），后续约 5-10 分钟/次
+#            （首次仍要编一次工具链，约 40 分钟，逃不掉）
+#
+# ------------------------------------------------------------------------------
+# 【为什么 dtb-y 必须在这里插，而不能放 diy-part2.sh】
+#   diy-part2.sh 跑在 Load custom configuration 步，那时 build_dir 里
+#   【还没有内核树】，实测 KDIR=空，sed 必然跳过（日志实锤）。
+#   make defconfig 也只生成 .config，不解压内核源码。
+#   -> 必须先 make target/linux/prepare，等内核树解压完、
+#      files-6.12 覆盖层铺完，再 sed 插 dtb-y，否则插了也会被盖回去。
+#
+# 【为什么不挂 CONFIG_MACH_...】
+#   直接写无条件 `dtb-y += xxx.dtb`，省掉 Kconfig 符号那一环失败点。
+#   单设备固件无副作用。
+#
+# 【dtb 校验为什么要硬 exit 1】
+#   主流程里 dtb 缺失会一路跑到 mkits，报一堆 Usage 信息，很难定位。
+#   本流程在编译后直接 ls 校验，找不到就明确红在「dtb 未产出」这一步。
+# ------------------------------------------------------------------------------
+
+name: OpenWrt Test (kernel + dtb only)
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  FEEDS_CONF: feeds.conf.default
+  CONFIG_FILE: .config
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  DTS_NAME: sun6i-a31s-mars-a31s
+  TZ: Asia/Shanghai
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    # ───────────────────────────────────────────────────────────────────────
+    # ccache 缓存：第二次起工具链复用，整体从 ~40 分钟降到 5-10 分钟
+    # key 带 .config 哈希 —— 改了配置自动失效重编，不会拿到脏缓存
+    # ───────────────────────────────────────────────────────────────────────
+    - name: Cache ccache
+      uses: actions/cache@main
+      with:
+        path: /home/runner/.ccache
+        key: ccache-${{ env.REPO_BRANCH }}-${{ hashFiles('.config') }}
+        restore-keys: |
+          ccache-${{ env.REPO_BRANCH }}-
+
+    - name: Clone source code
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Load custom feeds
+      run: |
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: Update feeds
+      run: cd openwrt && ./scripts/feeds update -a
+
+    - name: Install feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
+    # 与 diy-part2.sh 保持同一套动作：搬运 dts + 注册 Device。
+    # 第 4 步（dtb-y 插入）脚本里已移交，本流程下面专门处理。
+    - name: Load custom configuration
+      run: |
+        [ -e files ] && mv files openwrt/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: Make defconfig
+      run: cd openwrt && make defconfig
+
+    # ───────────────────────────────────────────────────────────────────────
+    # ★核心★ 先 prepare，再插 dtb-y，再编内核
+    #
+    # 第 1 步 prepare：解压内核源码 + 铺 files-6.12 覆盖层。
+    #   这一步之后 build_dir/.../linux-6.12.x/ 才存在，dts 也才进内核树。
+    # 第 2 步 sed：插 dtb-y。此时插不会被覆盖层盖回去（覆盖已发生完）。
+    # 第 3 步 compile：只编 target/linux，不碰 packages / 镜像打包。
+    # ───────────────────────────────────────────────────────────────────────
+    - name: Prepare kernel tree
+      run: |
+        cd openwrt
+        make target/linux/prepare -j$(nproc) V=s
+
+    - name: Inject MARS A31s dtb-y
+      run: |
+        cd openwrt
+        KDIR="$(ls -d build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-sunxi_cortexa7/linux-6.12.* 2>/dev/null | head -1)" || true
+        if [ -z "$KDIR" ] || [ ! -d "$KDIR/arch/arm/boot/dts/allwinner" ]; then
+          echo "[inject] 错误：prepare 之后仍找不到内核 dts 目录（KDIR=${KDIR:-空}）"
+          echo "[inject] 说明 prepare 未如期执行或目录结构有变，需检查上一步日志。"
+          exit 1
+        fi
+        K_DTS_DIR="$KDIR/arch/arm/boot/dts/allwinner"
+        echo "[inject] 内核 dts 目录 = $K_DTS_DIR"
+
+        # 兜底：dts 若没被 files-6.12 铺进来，直接补一份
+        if [ ! -f "$K_DTS_DIR/${DTS_NAME}.dts" ]; then
+          if [ -f "$GITHUB_WORKSPACE/dts/${DTS_NAME}.dts" ]; then
+            cp -f "$GITHUB_WORKSPACE/dts/${DTS_NAME}.dts" "$K_DTS_DIR/${DTS_NAME}.dts"
+            echo "[inject] 已兜底拷入 dts -> $K_DTS_DIR/${DTS_NAME}.dts"
+          else
+            echo "[inject] 错误：仓库里也找不到 dts 正本"
+            exit 1
+          fi
+        else
+          echo "[inject] dts 已在内核树中（files-6.12 覆盖层生效）"
+        fi
+
+        # 幂等插入：已有则跳过
+        if grep -q "${DTS_NAME}.dtb" "$K_DTS_DIR/Makefile"; then
+          echo "[inject] Makefile 已含 ${DTS_NAME}.dtb，跳过（幂等）"
+        else
+          sed -i "0,/^dtb-y/s|^dtb-y|dtb-y += ${DTS_NAME}.dtb\n\ndtby-|" "$K_DTS_DIR/Makefile"
+          echo "[inject] 已插入 dtb-y 条目 -> $K_DTS_DIR/Makefile"
+        fi
+
+        echo "[inject] ---- Makefile 前 8 行 ----"
+        head -8 "$K_DTS_DIR/Makefile"
+        echo "[inject] ---- mars 相关文件 ----"
+        ls -l "$K_DTS_DIR/" | grep -i 'mars' || echo "(暂无 mars 文件)"
+        exit 0
+
+    - name: Compile kernel only
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile (target/linux only)"
+        make target/linux/compile -j$(nproc) || make target/linux/compile -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    # ───────────────────────────────────────────────────────────────────────
+    # ★硬校验★ dtb 找不到就明确红在这里，不让它跑到 mkits 报一堆 Usage
+    # ───────────────────────────────────────────────────────────────────────
+    - name: Verify dtb
+      run: |
+        cd openwrt
+        KDIR="$(ls -d build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-sunxi_cortexa7/linux-6.12.* 2>/dev/null | head -1)" || true
+        DTB="$KDIR/arch/arm/boot/dts/allwinner/${DTS_NAME}.dtb"
+        echo "[verify] 目标文件 = $DTB"
+        if [ -f "$DTB" ]; then
+          echo "[verify] ✅ dtb 已产出，① 过关"
+          ls -l "$DTB"
+          # 顺手反编译一份，方便和原厂 DTB 对照（进度 ②）
+          dtc -I dtb -O dts "$DTB" -o "$GITHUB_WORKSPACE/${DTS_NAME}.frombuild.dts" || true
+          echo "[verify] 已反编译为 ${DTS_NAME}.frombuild.dts"
+        else
+          echo "[verify] ❌ dtb 未产出 —— 编译跑完但没有 .dtb"
+          echo "[verify] 常见于：dts 有语法错被静默跳过，或 dtb-y 未生效"
+          echo "[verify] ---- 目录实况 ----"
+          ls -l "$KDIR/arch/arm/boot/dts/allwinner/" 2>/dev/null | head -30 || true
+          exit 1
+        fi
+
+    - name: Upload dtb + decompiled dts
+      if: steps.compile.outputs.status == 'success'
+      uses: actions/upload-artifact@main
+      with:
+        name: MARS_A31s_dtb_${{ github.run_number }}
+        path: |
+          openwrt/build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-sunxi_cortexa7/linux-6.12.*/arch/arm/boot/dts/allwinner/*.dtb
+          ${{ github.workspace }}/${{ env.DTS_NAME }}.frombuild.dts
+
+    - name: Check space usage
+      if: (!cancelled())
+      run: df -hT
