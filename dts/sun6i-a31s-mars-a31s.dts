@@ -70,8 +70,13 @@
  *    2) &gmac phy-supply: 自造 reg_vcc3v3 -> &reg_dldo1（AXP221 DLDO1，
  *       官方 reg_dldo1 名 "vcc-gmac-phy" 3300mV，与 fex gmac_power=axp22_dldo1 吻合）
  *    3) IR: 删掉自造 ir_pl4_pin，改用官方节点 &ir + s_ir_rx_pin
- *    4) include sun6i-a31s-sina31s-core.dtsi，以取得 reg_dldo1 / mdio /
- *       gmac_mii_pins / s_ir_rx_pin 等标签定义（该文件又 include axp221.dtsi）
+ *
+ *  ★改动9（编译阻断级修复，第三轮）：
+ *    删掉 #include "sun6i-a31s-sina31s-core.dtsi"
+ *    —— 该文件第 43 行自带 /dts-v1/; 与本文件版本声明冲突，
+ *       dtc 报 "core dtsi:43.1-9 syntax error" 直接 FATAL 中断 make dtbs。
+ *    配套：gmac_mii_pins / s_ir_rx_pin / &mdio 改由本文件末尾附录自行声明
+ *    （不丢任何符号，详见 include 处注释）
  *
  *  编译与运行：
  *    1) 放到内核树 arch/arm/boot/dts/allwinner/sun6i-a31s-mars-a31s.dts
@@ -101,13 +106,22 @@
 /dts-v1/;
 #include "sun6i-a31s.dtsi"          /* [A] 必须是 a31s，不是 a31 */
 /*
- * ★改动8: 引入同 SoC 官方开发板的 core dtsi，以取得下列已定义标签：
- *   &reg_dldo1（AXP221 DLDO1，PHY 供电）、&mdio、&gmac_mii_pins、
- *   &s_ir_rx_pin、&reg_dcdc1 等（该文件内部还 include 了 axp221.dtsi）
- * 若编译报 "core dtsi not found"，把本行去掉，并在下方 &pio 里
- * 自行补 gmac_mii_pins / s_ir_rx_pin 两组引脚定义（内容见文件末尾附录）。
+ * ★改动9（编译阻断级修复）：【不要】include "sun6i-a31s-sina31s-core.dtsi"
+ *
+ * 该文件第 43 行自带 "/dts-v1/;"，而本文件第 101 行已有版本声明，
+ * cpp 展开后文件中间又出现版本声明，dtc 直接报错退出：
+ *     Error: sun6i-a31s-sina31s-core.dtsi:43.1-9 syntax error
+ *     FATAL ERROR: Unable to parse input tree
+ * （43.1-9 即第 43 行行首 9 字符 = "/dts-v1/"，已核对上游原文确认）
+ *
+ * 删掉它【不丢任何符号】：
+ *   sun6i-a31s.dtsi            -> 上一行已直接 include（SoC/&pio/&gmac/&ir/&uart0）
+ *   sunxi-common-regulators    -> 本文件自带 reg_vcc3v3 / reg_vcc5v
+ *   &reg_dldo1                 -> 本文件自己声明（见下方，PHY 供电所需）
+ *   &mdio                      -> 本文件自己写（见下方）
+ *   gmac_mii_pins/s_ir_rx_pin  -> 本文件末尾附录已启用（见文件结尾）
+ * 上游那份 dtsi 在主线里也只被 sina31s.dts 一家引用，非公共 SoC 头。
  */
-#include "sun6i-a31s-sina31s-core.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pinctrl/sun4i-a10.h>
 
@@ -414,25 +428,46 @@
  * ============================================================
  */
 
+/* ============================================================
+ *  ★改动9 附录：★改动9 把这段从「注释备用」升级为「生效代码」
+ *  原因：删掉 sun6i-a31s-sina31s-core.dtsi 后，gmac_mii_pins /
+ *        s_ir_rx_pin 这两个标签需要本文件自己提供。
+ *
+ *  ⚠️ pins 列表核对方法（GitHub 网页即可，无需装 grep）：
+ *     打开 torvalds/linux 的
+ *     arch/arm/boot/dts/allwinner/sun6i-a31s-sina31s-core.dtsi
+ *     对照其中 gmac_mii_pins / s_ir_rx_pin 两组的 pins 原文。
+ *     若报 -EINVAL 或 dtc 警告，就是这里拼错，按原文改。
+ * ============================================================ */
+&pio {
+    gmac_mii_pins: gmac-mii-pins {
+        pins = "PA0", "PA1", "PA2", "PA3", "PA5", "PA6", "PA7",
+               "PA8", "PA9", "PA10", "PA11", "PA12", "PA13",
+               "PA14", "PA15", "PA16";
+        function = "gmac";
+    };
+
+    s_ir_rx_pin: ir-rx-pin {
+        pins = "PL4";               /* IR 接收，fex ir_rx = port:PL04<2> */
+        function = "ir";
+    };
+};
+
 /*
- * ===== 附录：若不 include core dtsi，需自行补的两组引脚 =====
- * （内容取自官方 sun6i-a31s-sina31s-core.dtsi / pinctrl 定义）
- *
- * &pio {
- *     gmac_mii_pins: gmac-mii-pins {
- *         pins = "PA0", "PA1", "PA2", "PA3", "PA5", "PA6", "PA7",
- *                "PA8", "PA9", "PA10", "PA11", "PA12", "PA13",
- *                "PA14", "PA15", "PA16";
- *         function = "gmac";
- *     };
- *
- *     s_ir_rx_pin: ir-rx-pin {
- *         pins = "PL4";
- *         function = "ir";
- *     };
- * };
- * ⚠️ 上面 pins 列表请照内核树实际定义核对后再用，不要直接照抄本注释。
- *
+ * ★改动9: MDIO 总线 —— 原由 core dtsi 提供，现自行声明
+ * 官方 sina31s 与本机实测（/sys/bus/mdio_bus/devices -> sunxi_gmac-0:01）
+ * 同为 reg = <1>，两源互证。
+ */
+&mdio {
+    #address-cells = <1>;
+    #size-cells = <0>;
+    phy1: ethernet-phy@1 {
+        reg = <1>;
+        compatible = "ethernet-phy-ieee802.3-c22";
+    };
+};
+
+/*
  * ===== 配套：OpenWrt 侧（不进 DTS）=====
  * /etc/config/network 里写死 eth0 MAC（★改动5）：
  *   config device
