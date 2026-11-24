@@ -138,10 +138,10 @@ jobs:
         KDIR="$(ls -d build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-sunxi_cortexa7/linux-6.12.* 2>/dev/null | head -1)" || true
         if [ -z "$KDIR" ] || [ ! -d "$KDIR/arch/arm/boot/dts/allwinner" ]; then
           echo "[inject] 错误：prepare 之后仍找不到内核 dts 目录（KDIR=${KDIR:-空}）"
-          echo "[inject] 说明 prepare 未如期执行或目录结构有变，需检查上一步日志。"
           exit 1
         fi
         K_DTS_DIR="$KDIR/arch/arm/boot/dts/allwinner"
+        MK="$K_DTS_DIR/Makefile"
         echo "[inject] 内核 dts 目录 = $K_DTS_DIR"
 
         # 兜底：dts 若没被 files-6.12 铺进来，直接补一份
@@ -157,16 +157,36 @@ jobs:
           echo "[inject] dts 已在内核树中（files-6.12 覆盖层生效）"
         fi
 
-        # 幂等插入：已有则跳过
-        if grep -q "${DTS_NAME}.dtb" "$K_DTS_DIR/Makefile"; then
-          echo "[inject] Makefile 已含 ${DTS_NAME}.dtb，跳过（幂等）"
+        # 幂等：只认我们自己插的独立行，不靠 ^dtb-y 匹配
+        if grep -qE "^dtb-y \+= ${DTS_NAME}\.dtb$" "$MK"; then
+          echo "[inject] Makefile 已含 dtb-y += ${DTS_NAME}.dtb，跳过（幂等）"
         else
-          sed -i "0,/^dtb-y/s|^dtb-y|dtb-y += ${DTS_NAME}.dtb\n\ndtby-|" "$K_DTS_DIR/Makefile"
-          echo "[inject] 已插入 dtb-y 条目 -> $K_DTS_DIR/Makefile"
+          # 锚定首个 dtb-$(CONFIG_MACH_*) 续行块之前，插到块外、独立成行
+          python3 - "$MK" "${DTS_NAME}" <<'PY'
+        import sys, re
+        mk, dts = sys.argv[1], sys.argv[2]
+        s = open(mk, encoding='utf-8').read()
+        lines = s.split('\n')
+        idx = next((i for i, l in enumerate(lines)
+                    if re.match(r'^dtb-\$\(CONFIG_MACH_[A-Z0-9]+\)[[:space:]]*\+?=', l)), 0)
+        lines.insert(idx, f"dtb-y += {dts}.dtb")
+        open(mk, 'w', encoding='utf-8').write('\n'.join(lines))
+        print(f"[inject] 已插入 dtb-y 条目（第 {idx+1} 行）")
+        PY
         fi
 
-        echo "[inject] ---- Makefile 前 8 行 ----"
-        head -8 "$K_DTS_DIR/Makefile"
+        # 硬校验：确认条目真在文件里，避免 sed 空转还报成功
+        if grep -qE "^dtb-y \+= ${DTS_NAME}\.dtb$" "$MK"; then
+          echo "[inject] ✅ 校验通过：Makefile 中已存在条目"
+        else
+          echo "[inject] ❌ 插入失败：Makefile 中仍无条目"
+          echo "[inject] ---- Makefile 前 12 行 ----"
+          head -12 "$MK"
+          exit 1
+        fi
+
+        echo "[inject] ---- 插入点上下文 ----"
+        grep -n -B2 -A2 "${DTS_NAME}.dtb" "$MK" || true
         echo "[inject] ---- mars 相关文件 ----"
         ls -l "$K_DTS_DIR/" | grep -i 'mars' || echo "(暂无 mars 文件)"
         exit 0
