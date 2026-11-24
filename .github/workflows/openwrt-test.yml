@@ -119,7 +119,11 @@ jobs:
         make defconfig
         make download -j8
         find dl -size -1024c -exec ls -l {} \; -exec rm -f {} \;
-
+    - name: Build tools and toolchain
+      run: |
+        cd openwrt
+        make tools/install -j$(nproc)
+        make toolchain/install -j$(nproc)
     # ───────────────────────────────────────────────────────────────────────
     # ★核心★ 先 prepare，再插 dtb-y，再编内核（insert 步已验证通过）
     # ───────────────────────────────────────────────────────────────────────
