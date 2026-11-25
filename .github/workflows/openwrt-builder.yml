@@ -398,3 +398,82 @@ jobs:
         delete_tags: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # =========================================================================
+    # ★ 新增 step：钉钉通知（成功 / 失败都发）
+    # -------------------------------------------------------------------------
+    # 前置：仓库 Settings → Secrets and variables → Actions 添加
+    #       DINGTALK_WEBHOOK = 机器人 Webhook 完整地址（含 access_token）
+    #       机器人安全设置选「自定义关键词」，值填 A31S
+    #
+    # 关键词：钉钉只放行包含该关键词的消息，故 markdown 的 title 与 text
+    #         都逐字带 "A31S"；以后改文案别把这几个字符删掉，否则被拒收。
+    #
+    # 触发：!cancelled() —— 前面任意一步 exit 1 让 job=failure 时仍执行；
+    #       手动取消（cancelled）不通知。成败取 job.status，不自己判。
+    # 不制造假红：Webhook 没配 / 发送失败只回显警告，本步恒 exit 0，
+    #       构建该绿还绿、该红还红；通知结果不改变 workflow 结论。
+    # 不加签：本机器人是「自定义关键词」模式，不是「加签」模式，无需算签名。
+    # =========================================================================
+    - name: DingTalk notification
+      if: (!cancelled())
+      env:
+        DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+        JOB_STATUS: ${{ job.status }}
+        REPO: ${{ github.repository }}
+        REF_NAME: ${{ github.ref_name }}
+        COMMIT_SHA: ${{ github.sha }}
+        ACTOR: ${{ github.actor }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        PAYLOAD_FILE="$RUNNER_TEMP/dingtalk_payload.json"
+        RESP_FILE="$RUNNER_TEMP/dingtalk_resp.json"
+        export NOW="$(TZ="$TZ" date '+%Y-%m-%d %H:%M:%S %Z')"
+
+        python3 - <<'PY' > "$PAYLOAD_FILE"
+        import json, os
+        status = os.environ.get('JOB_STATUS', 'unknown')
+        icon = '✅' if status == 'success' else ('❌' if status == 'failure' else '⚠️')
+        word = {'success': '成功', 'failure': '失败'}.get(status, status)
+        title = f"A31S OpenWrt 构建{word}"
+        lines = [
+            f"## {icon} {title}",
+            "",
+            "> 关键词校验：A31S",
+            "",
+            f"- **结果**：`{status}`",
+            f"- **仓库**：{os.environ.get('REPO', '')}",
+            f"- **分支**：{os.environ.get('REF_NAME', '')}",
+            f"- **Commit**：`{os.environ.get('COMMIT_SHA', '')[:7]}`",
+            f"- **触发人**：{os.environ.get('ACTOR', '')}",
+            f"- **时间**：{os.environ.get('NOW', '')}",
+            f"- **Run**：#{os.environ.get('RUN_ID', '')}",
+            "",
+            f"[👉 查看日志与 Artifacts]({os.environ.get('RUN_URL', '')})",
+        ]
+        print(json.dumps({
+            "msgtype": "markdown",
+            "markdown": {"title": title, "text": "\n".join(lines)},
+        }, ensure_ascii=False))
+        PY
+
+        if [ -z "$DINGTALK_WEBHOOK" ]; then
+          echo "[钉钉] ⚠️ 未配置 secrets.DINGTALK_WEBHOOK，跳过通知（不影响构建结论）"
+          echo "[钉钉] 配置方法：仓库 Settings → Secrets and variables → Actions → 添加 DINGTALK_WEBHOOK"
+          exit 0
+        fi
+
+        HTTP="$(curl -sS --max-time 15 -o "$RESP_FILE" -w '%{http_code}' \
+          -X POST "$DINGTALK_WEBHOOK" \
+          -H 'Content-Type: application/json' \
+          --data-binary @"$PAYLOAD_FILE")" || HTTP="000"
+        echo "[钉钉] HTTP=$HTTP"
+        echo "[钉钉] 响应: $(cat "$RESP_FILE" 2>/dev/null)"
+
+        if [ "$HTTP" = "200" ] && grep -Eq '"errcode"[[:space:]]*:[[:space:]]*0' "$RESP_FILE" 2>/dev/null; then
+          echo "[钉钉] ✅ 通知已送达（title/text 均含关键词 A31S）"
+        else
+          echo "[钉钉] ⚠️ 未确认送达：检查 Webhook、关键词 A31S 设置或上面的响应体"
+        fi
+        exit 0
