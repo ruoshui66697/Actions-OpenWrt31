@@ -302,6 +302,62 @@ jobs:
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
+    # =========================================================================
+    # ★ 新增 step：Collect first-boot payloads from build_dir
+    # -------------------------------------------------------------------------
+    # 目的：把第一轮上板要用的 kernel 载荷收进 OpenWrt_firmware 附件。
+    # 它们只产在 build_dir，不在 bin/targets 归集范围，原流程没人收。
+    #
+    # 位置：必须在 Organize files 之后（它才写好 FIRMWARE 并 rm -rf packages）、
+    #       Upload firmware directory 之前（同一目录，自动进同一个 artifact）。
+    #
+    # 条件：用 !cancelled() 对齐 Organize files —— 全量 make 可能因 sdcard
+    #       支线（缺 boot.scr 的 mcopy）红掉，但 kernel/dtb/FIT 在那之前
+    #       已经产出；不能依赖 steps.compile.outputs.status（挂了就不会写）。
+    #
+    # 不吞任何错误、不改 make 结果、不动 boot.scr：job 该红还是红，
+    #       这一步只保证"附件里有货"，不制造假绿。
+    # 缺件只回显警告 + 末尾清单，以附件实际内容为准，不假装齐全。
+    # =========================================================================
+    - name: Collect first-boot payloads
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cd openwrt
+        if [ -z "${FIRMWARE:-}" ] || [ ! -d "${FIRMWARE:-}" ]; then
+          echo "[collect] ❌ FIRMWARE 目录不可用，跳过收集（请看 Organize files 日志）"
+          exit 0
+        fi
+
+        BDIR="build_dir/target-arm_cortex-a7+neon-vfpv4_musl_eabi/linux-sunxi_cortexa7"
+        KDIR="$(ls -d "$BDIR"/linux-6.12.* 2>/dev/null | head -1)" || true
+        DTB="${KDIR:-}/arch/arm/boot/dts/allwinner/${DTS_NAME}.dtb"
+
+        # 三样：FIT 包（内嵌 kernel+dtb）、独立 dtb、裸 zImage。
+        # FIT 最终名 yml 里看不出来（mkimage 写 .new，make 规则再收敛成不带后缀），
+        # 两个候选都找，日志标明实际取了哪个，不预判。
+        FIT=""
+        for f in "$BDIR/inphic_mars-a31s-kernel.bin" "$BDIR/inphic_mars-a31s-kernel.bin.new"; do
+          if [ -f "$f" ]; then FIT="$f"; break; fi
+        done
+
+        copy_one() {
+          src="$1"; label="$2"
+          if [ -n "$src" ] && [ -f "$src" ]; then
+            cp -f "$src" "$FIRMWARE/"
+            echo "[collect] ✅ $label <- $src ($(stat -c%s "$src") bytes)"
+          else
+            echo "[collect] ⚠️  $label 未找到，本轮不收集（不假成功）"
+          fi
+        }
+
+        copy_one "$FIT"        "FIT(kernel+dtb 同包)"
+        copy_one "$DTB"        "独立 dtb"
+        copy_one "$BDIR/zImage" "裸 zImage"
+
+        echo "[collect] ---- FIRMWARE 目录实际清单（以附件内容为准）----"
+        ls -lh "$FIRMWARE"
+        exit 0
+
     - name: Upload firmware directory
       uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
