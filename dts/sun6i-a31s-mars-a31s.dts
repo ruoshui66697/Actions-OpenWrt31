@@ -35,9 +35,11 @@
  *    BT        : RTL8723BS（日志 rtk_btusb），后补；AP6181 为空贴，永远不提
  *    串口      : UART0 = PH20(TX)/PH21(RX)，115200n8
  *                ★ fex [uart_para] 实锤 + /proc/iomem "01c28000/01c28800 sw_serial"
+ *                  上游 sun6i-a31.dtsi 的 uart0_ph_pins 也是这两脚
  *                  原写 PH0/PH1 是错的（见 ★改动1）
  *    IR        : PL04, 电源键码 0x1A, addr 0xFB04（fex [ir_para]）
- *                ★改动8: 引脚组名改用官方 sina31s 的 s_ir_rx_pin
+ *                ★改动8/11: 引脚组 s_ir_rx_pin 由上游 sun6i-a31.dtsi
+ *                  的 r_pio 提供（PL4 / function = "s_ir"），本文件不自造
  *    按键      : PH13 = sprite_gpio0 卡刷键（fex [card_boot]/[boot_init_gpio]）
  *                ★ 注意：官方 sina31s-sdk.dts 把 PH13 当状态 LED，
  *                  本机 PH13 是卡刷键、PH09 才是蓝灯 —— 【不要照抄官方 LED】
@@ -71,12 +73,15 @@
  *       "vcc-gmac-phy" 3300mV，与 fex gmac_power=axp22_dldo1 吻合）
  *       —— ★改动10 已回退，原因见下
  *    3) IR: 删掉自造 ir_pl4_pin，改用官方节点 &ir + s_ir_rx_pin
+ *       （★改动11 核实：该标签由上游 sun6i-a31.dtsi 的 r_pio 原生提供）
  *
  *  ★改动9（编译阻断级修复，第三轮）：
  *    删掉 #include "sun6i-a31s-sina31s-core.dtsi"
  *    —— 该文件第 43 行自带 /dts-v1/; 与本文件版本声明冲突，
  *       dtc 报 "core dtsi:43.1-9 syntax error" 直接 FATAL 中断 make dtbs。
- *    配套：gmac_mii_pins / s_ir_rx_pin 改由本文件末尾附录自行声明。
+ *    配套假设已被 ★改动11 推翻：gmac_mii_pins / s_ir_rx_pin 本来就由
+ *    上游 sun6i-a31.dtsi 提供，自造附录反而造成 duplicate_label，
+ *    现已整块删除，引用直接落到上游节点。
  *
  *  ★改动10（编译阻断级修复，第四轮）—— 收干净 ★改动9 的尾巴 + 原稿语法错：
  *    1) 第 255 行 label "led-status:" -> "led_status:"
@@ -88,6 +93,26 @@
  *       全文只保留 GMAC 章节一份。
  *    以上均为纯语法/引用层修复，【没动任何硬件值】：
  *       PH09 / PHY 地址 1 / MII / 1 GiB / 七路电压 全部保持实测值。
+ *
+ *  ★改动11（第五轮，依据用户提供的上游 sun6i-a31.dtsi 全文）：
+ *    红点：sun6i-a31.dtsi:1397.29-1400.6 ERROR (duplicate_label)
+ *          Duplicate label 's_ir_rx_pin' on
+ *            /soc/pinctrl@1f02c00/s-ir-rx-pin  （上游 r_pio）
+ *            /soc/pinctrl@1c20800/ir-rx-pin    （本文件自造附录）
+ *    定性：dtc 已从 parse 进入 checks，是命名冲突，与引脚/电压/寄存器值无关。
+ *    改动（同一根因：自造重复 pinctrl 组）：
+ *      1) 删掉文件末尾附录整块 &pio，其中 gmac_mii_pins / s_ir_rx_pin
+ *         与上游 label 重名（后者是当前红点，前者是排队等报的下一颗雷）。
+ *         自造 IR 组还挂错控制器（PL4 属 r_pio 却塞进 pio）、
+ *         function 写成 "ir"（上游为 "s_ir"）、MII 引脚列表也不对。
+ *      2) 删掉自造 uart0_ph20_pins，&uart0 的 pinctrl-0 改指上游
+ *         uart0_ph_pins（pins = "PH20","PH21" / function = "uart0"）。
+ *      3) &gmac 的 &gmac_mii_pins、&ir 的 &s_ir_rx_pin 【一字不改】，
+ *         删掉重名定义后自动解析到上游正确节点。
+ *      4) &mdio 里重复的 #address-cells / #size-cells 删掉（上游
+ *         snps,dwmac-mdio 已自带），贴合官方 sina31s-sdk.dts 写法。
+ *    已核对上游原文，三组 label 名逐字一致，故引用无需改名。
+ *    绝不使用 dtc -f 强制输出：重复 label 会让引用落到不确定节点。
  *
  *  编译与运行：
  *    1) 放到内核树 arch/arm/boot/dts/allwinner/sun6i-a31s-mars-a31s.dts
@@ -111,6 +136,8 @@
  *    x PHY 供电曾挂自造 3.3V -> ★改动8 改 &reg_dldo1 -> ★改动10 删 core dtsi
  *      后该标签无定义源，回退 reg_vcc3v3（硬件上仍是 AXP221 DLDO1，U-Boot 已配好）
  *    x 照抄官方 sina31s 的 LED(PH13)/HDMI/OTG -> 本机 PH13 是卡刷键、HDMI 是 GM7121
+ *    x 曾自造 gmac_mii_pins / s_ir_rx_pin / uart0_ph20_pins 三组
+ *      -> 上游全有，重名致 dtc duplicate_label 中断（★改动11 已删）
  *    x dd bs=1M 在安卓 toybox 失效 -> 必须 bs=1024，也不认 status=progress
  * ============================================================
  */
@@ -132,7 +159,8 @@
  *   &reg_dldo1                 -> ★改动10 已移除（悬挂引用），phy-supply 改用
  *                               本文件已声明的 reg_vcc3v3，详见 GMAC 章节
  *   &mdio                      -> 标签本就来自 SoC dtsi，只需补 PHY 子节点
- *   gmac_mii_pins/s_ir_rx_pin  -> 本文件末尾附录已启用（见文件结尾）
+ *   gmac_mii_pins/s_ir_rx_pin  -> 上游 sun6i-a31.dtsi 原生提供，
+ *                                ★改动11 已删本文件自造的重复附录
  * 上游那份 dtsi 在主线里也只被 sina31s.dts 一家引用，非公共 SoC 头。
  */
 #include <dt-bindings/gpio/gpio.h>
@@ -204,9 +232,10 @@
      *  主线 sunxi 驱动（USB PHY / MMC / 音频）会去查这些 supply，
      *  不声明会刷一堆 "XXX supply not found, using dummy regulator" 的噪声。
      *  这些是板子上本来就有的固定 3.3V/5V，不是 PMIC 可调轨。
-     *  ★改动8: 网口 PHY 的 supply 已改用真实的 AXP221 DLDO1（见 &reg_dldo1），
-     *  不再用自造的 vcc3v3 顶替 —— 但 reg_vcc3v3 仍保留给其它可能引用它的节点。
-     *  AXP221 其余可调电压由 U-Boot + 内核 axp221 驱动按 script.bin 自行配好。
+     *  ★改动10 后现状：网口 PHY 的 phy-supply 指回本文件声明的 reg_vcc3v3。
+     *  （★改动8 曾改 &reg_dldo1，但删 core dtsi 后该标签无定义源，已回退。）
+     *  硬件上 PHY 仍由 AXP221 DLDO1 供电，U-Boot 已按 script.bin 配好，
+     *  initramfs 阶段内核无需再管。其余可调电压同理。
      * ======================================================== */
     reg_vcc3v3: regulator-vcc3v3 {
         compatible = "regulator-fixed";
@@ -279,35 +308,44 @@
     };
 
     /* ========================================================
-     *  ★改动8: 删掉自造的 "ir" 节点内容与自定义 ir_pl4_pin，
-     *  改用官方 sina31s 的写法 —— 只开 &ir 并指向官方引脚组 s_ir_rx_pin。
-     *  兼容性由 core.dtsi 提供的 &ir 节点保证（compatible/clocks/resets 已在内）。
-     *  fex [ir_para] ir_rx = port:PL04<2>, 电源键码 0x1A, addr 0xFB04
-     *  遥控器键码表另配 /etc/rc_keymaps，第一阶段可不管。
+     *  ★改动8/11: 删掉自造的 "ir" 节点内容与自定义 ir_pl4_pin，
+     *  改用官方 sina31s 的写法 —— 只开 &ir 并指向 s_ir_rx_pin。
+     *  &ir 节点本体（compatible / clocks / clock-names / resets /
+     *  interrupts / reg）由上游 sun6i-a31.dtsi 提供，本文件只补 pinctrl
+     *  与 status。s_ir_rx_pin 同样来自上游 r_pio（pinctrl@1f02c00）：
+     *      s_ir_rx_pin: s-ir-rx-pin { pins = "PL4"; function = "s_ir"; };
+     *  与 fex [ir_para] ir_rx = port:PL04<2> 完全吻合。
+     *  电源键码 0x1A, addr 0xFB04；键码表另配 /etc/rc_keymaps，第一阶段可不管。
      * ======================================================== */
 };
 
 /* ============================================================
- *  ★改动8: 自定义引脚组只保留 UART0（官方 core dtsi 未必有 PH20 变体）
- *  IR 与 GMAC 的引脚组一律使用官方定义：s_ir_rx_pin / gmac_mii_pins
+ *  ★改动11: 本文件【不再自定义任何 pinctrl 组】。
+ *
+ *  已核对上游 sun6i-a31.dtsi 原文（编译机 6.12 树），以下三组原生存在：
+ *    pio   (pinctrl@1c20800):
+ *      uart0_ph_pins : uart0-ph-pins { pins = "PH20","PH21"; function = "uart0"; };
+ *      gmac_mii_pins : gmac-mii-pins { 18 根 PA 脚; function = "gmac"; };
+ *    r_pio (pinctrl@1f02c00):
+ *      s_ir_rx_pin   : s-ir-rx-pin   { pins = "PL4"; function = "s_ir"; };
+ *
+ *  原先自造的 uart0_ph20_pins / gmac_mii_pins / s_ir_rx_pin 全部删除：
+ *    - 后两者与上游 label 重名 -> dtc 报 duplicate_label（第三个红点）
+ *    - 自造 IR 组还挂错控制器、function 写错、MII 引脚列表也不对
+ *  引用直接改用上游标签，一个硬件值都没重猜。
  * ============================================================ */
-&pio {
-    /* ★改动1 配套：UART0 走 PH20/PH21 */
-    uart0_ph20_pins: uart0-ph20-pins {
-        pins = "PH20", "PH21";      /* 7 * 32+20=244(TX), 7 * 32+21=245(RX) */
-        function = "uart0";
-    };
-};
 
 /* ============================================================
  *  UART0 —— 调试串口
  *  [A] 必须 okay，否则内核起来后一片黑
- *  ★改动1：pinctrl 从 uart0_ph_pins（PH0/PH1）换成 uart0_ph20_pins（PH20/PH21）
+ *  ★改动1/11：最终 pinctrl-0 = <&uart0_ph_pins>（上游 sun6i-a31.dtsi
+ *    原生组，pins = "PH20","PH21" / function = "uart0"）。
+ *    自造 uart0_ph20_pins 已删（★改动11），避免留下悬挂引用。
  *    依据 fex [uart_para] + /proc/iomem "sw_serial" 双证
  * ============================================================ */
 &uart0 {
     pinctrl-names = "default";
-    pinctrl-0 = <&uart0_ph20_pins>;                 /* ★改动1: PH20/PH21 */
+    pinctrl-0 = <&uart0_ph_pins>;                   /* ★改动11: 上游实名 */
     status = "okay";
 };
 
@@ -335,7 +373,7 @@
  *    官方 sina31s + fex 双证，届时照抄即可，不用重新猜）。
  *
  *  若 ifconfig eth0 up 报 "PHY connection failure"，【一次只动一个变量】：
- *    1) 确认 gmac_mii_pins 的 pins 列表与内核树实际定义一致（见文件末尾附录）
+ *    1) 确认 gmac_mii_pins 由上游 sun6i-a31.dtsi 提供（★改动11 已核对原文）
  *    2) 才去试 phy-mode = "rmii" + rmii 引脚组
  *    3) 查 AXP221 DLDO1 是否上电（读 /sys/class/regulator 下各条目的 name）
  *       ★改动10 附带修复：原写法含 glob 星号斜杠，会被 cpp 当成注释结束符
@@ -351,14 +389,13 @@
 };
 
 /*
- * ★改动10: 全文【唯一】的 &mdio 块与 phy1 定义。
- *   &mdio 标签由 sun6i-a31s.dtsi（gmac 节点内的 mdio 子节点）提供，
- *   此处只补 PHY 子节点，不再重复声明总线、也不再在附录里定义第二份 phy1。
- *   官方 sina31s 与本机实测同写 reg = <1>，两源互证。
+ * ★改动10/11: 全文【唯一】的 &mdio 块与 phy1 定义。
+ *   &mdio 标签由上游 sun6i-a31.dtsi 的 gmac 节点内提供，且已自带
+ *   #address-cells / #size-cells（compatible = "snps,dwmac-mdio"），
+ *   本文件不再重复声明，只补 PHY 子节点。
+ *   官方 sina31s-sdk.dts 与本机实测同写 reg = <1>，两源互证。
  */
 &mdio {
-    #address-cells = <1>;
-    #size-cells = <0>;
     phy1: ethernet-phy@1 {
         reg = <1>;                                  /* [A] 实测地址，非 0 */
         compatible = "ethernet-phy-ieee802.3-c22";  /* 通用 Clause 22 */
@@ -367,7 +404,9 @@
 };
 
 /* ============================================================
- *  ★改动8: IR —— 官方写法，引脚组 s_ir_rx_pin 由 core dtsi 定义
+ *  ★改动8/11: IR —— 官方写法。
+ *  s_ir_rx_pin 由上游 sun6i-a31.dtsi 的 r_pio (pinctrl@1f02c00) 提供，
+ *  本文件删掉自造同名组后，该引用自动落到正确节点。
  * ============================================================ */
 &ir {
     pinctrl-names = "default";
@@ -454,37 +493,28 @@
  */
 
 /* ============================================================
- *  ★改动9/10 附录：把这段从「注释备用」升级为「生效代码」
- *  原因：删掉 sun6i-a31s-sina31s-core.dtsi 后，gmac_mii_pins /
- *        s_ir_rx_pin 这两个标签需要本文件自己提供。
- *  ★改动10 已把原先放在这里的第二份 &mdio / phy1 删掉（重复定义），
- *        现在本附录只负责两组 pinctrl 标签。
+ *  ★改动11: 【原「自定义 pinctrl 附录」整块已删除】
  *
- *  ⚠️ pins 列表核对方法（GitHub 网页即可，无需装 grep）：
- *     打开 torvalds/linux 的
- *     arch/arm/boot/dts/allwinner/sun6i-a31s-sina31s-core.dtsi
- *     对照其中 gmac_mii_pins / s_ir_rx_pin 两组的 pins 原文。
- *     若报 -EINVAL 或 dtc 警告，就是这里拼错，按原文改。
+ *  这里曾有 &pio { gmac_mii_pins / s_ir_rx_pin } 两组自造定义，
+ *  是 ★改动9 删掉 core dtsi 时「怕丢符号」补上的，结果补成了重复：
+ *    - gmac_mii_pins / s_ir_rx_pin 与上游 sun6i-a31.dtsi 的 label 重名
+ *      -> dtc checks 阶段 duplicate_label（第三个红点 + 排队的一颗）
+ *    - 自造 IR 组挂在 pio 而非 r_pio、function 写成 "ir" 而非 "s_ir"
+ *    - 自造 MII 引脚列表与上游不符
+ *  上游原文已核实：这两组 label 名与我们的引用逐字一致，故
+ *    &gmac { pinctrl-0 = <&gmac_mii_pins>; }  不改
+ *    &ir   { pinctrl-0 = <&s_ir_rx_pin>;  }  不改
+ *  删除自造定义后，引用自动落到上游正确节点。
+ *
+ *  【不要再往这里加自定义引脚组】—— 需要新组时先查上游
+ *  arch/arm/boot/dts/allwinner/sun6i-a31.dtsi 的 pio / r_pio 节点。
  * ============================================================ */
-&pio {
-    gmac_mii_pins: gmac-mii-pins {
-        pins = "PA0", "PA1", "PA2", "PA3", "PA5", "PA6", "PA7",
-               "PA8", "PA9", "PA10", "PA11", "PA12", "PA13",
-               "PA14", "PA15", "PA16";
-        function = "gmac";
-    };
-
-    s_ir_rx_pin: ir-rx-pin {
-        pins = "PL4";               /* IR 接收，fex ir_rx = port:PL04<2> */
-        function = "ir";
-    };
-};
 
 /*
- * ★改动10: 附录里原先那份 &mdio + phy1 已删除。
+ * ★改动10 记录：附录里原先那份 &mdio + phy1 已删除。
  *   它和 GMAC 章节的 &mdio 构成 duplicate label "phy1" +
  *   duplicate node "ethernet-phy@1"，是删 core dtsi 时的收尾残留。
- *   全文现在只在 GMAC 章节保留一份，&mdio 标签由 SoC dtsi 提供。
+ *   全文现在只在 GMAC 章节保留一份，&mdio 标签由上游 SoC dtsi 提供。
  *
  * ===== 配套：OpenWrt 侧（不进 DTS）=====
  * /etc/config/network 里写死 eth0 MAC（★改动5）：
