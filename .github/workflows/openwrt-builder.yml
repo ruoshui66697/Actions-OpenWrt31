@@ -65,7 +65,81 @@ jobs:
         $GITHUB_WORKSPACE/$DIY_P1_SH
 
     - name: Update feeds
-      run: cd openwrt && ./scripts/feeds update -a
+      run: |
+        set +e   # Actions 默认带 -e，关掉它，降级链要自己判返回码
+        cd openwrt
+
+        FEEDS="packages luci routing telephony helloworld video"
+        GH_PREFIX="https://ghproxy.net/https://github.com/"
+        # 备用代理域名可用性我没验证过，不确定；要换就改这一行默认值，
+        # 或在 workflow 的 env 块加同名 FEEDS_PROXY_2 覆盖
+        PROXY_2="${FEEDS_PROXY_2:-https://ghfast.top/https://github.com/}"
+
+        check_feeds() {
+          miss=0
+          for f in $FEEDS; do
+            if [ ! -e "feeds/$f/.git" ] || [ -z "$(ls -A "feeds/$f" 2>/dev/null)" ]; then
+              echo "[feeds]   缺失/不完整: feeds/$f"
+              miss=1
+            fi
+          done
+          return $miss
+        }
+
+        clear_rewrite() {
+          git config --global --unset-all url."https://github.com/".insteadOf 2>/dev/null
+          git config --global --unset-all url."$PROXY_2".insteadOf 2>/dev/null
+          return 0
+        }
+
+        try_update() {
+          label="$1"
+          echo "[feeds] ===== 尝试：$label ====="
+          rm -rf feeds/* 2>/dev/null
+          ./scripts/feeds update -a
+          rc=$?
+          echo "[feeds] update 退出码=$rc（仅参考，以目录校验为准）"
+          if check_feeds; then
+            echo "[feeds] ✅ $label 成功：六个 feed 目录齐全"
+            return 0
+          fi
+          echo "[feeds] ❌ $label 失败：目录校验未过，继续降级"
+          return 1
+        }
+
+        # 第 1 级：原配置（feeds.conf.default 里的 ghproxy 前缀，一字不动）
+        clear_rewrite
+        OK=0
+        if try_update "第1级 原配置(ghproxy)"; then OK=1; fi
+
+        # 第 2 级：直连 —— git 层透明重写，不改配置文件
+        if [ "$OK" -eq 0 ]; then
+          clear_rewrite
+          git config --global url."https://github.com/".insteadOf "$GH_PREFIX"
+          if try_update "第2级 直连 GitHub"; then OK=1; fi
+        fi
+
+        # 第 3 级：第二代理（同样用 git 重写）
+        if [ "$OK" -eq 0 ]; then
+          clear_rewrite
+          git config --global url."$PROXY_2".insteadOf "$GH_PREFIX"
+          if try_update "第3级 第二代理 ($PROXY_2)"; then OK=1; fi
+        fi
+
+        if [ "$OK" -eq 0 ]; then
+          echo "[feeds] ❌ 三级兜底全部失败，目录仍不齐，硬失败在这里"
+          echo "[feeds] ---- 当前 feeds 目录实况 ----"
+          ls -la feeds/ 2>/dev/null
+          exit 1
+        fi
+
+        # 成功后：后续 feeds install / make download 等 git 请求统一走直连，
+        # 别带着可能不稳的代理配置往下跑
+        clear_rewrite
+        git config --global url."https://github.com/".insteadOf "$GH_PREFIX"
+        echo "[feeds] 后续 git 请求统一重写为直连，配置文件未改动"
+        echo "[feeds] ---- 六个 feed 目录 ----"
+        for f in $FEEDS; do echo "  feeds/$f: $(ls -A feeds/$f 2>/dev/null | wc -l) 项"; done
 
     - name: Install feeds
       run: cd openwrt && ./scripts/feeds install -a
