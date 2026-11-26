@@ -9,7 +9,8 @@
  * ============================================================
  *  【本文件所有参数的来源分级 —— 改之前先看这里】
  * ============================================================
- *  [A] 实锤：安卓 TTL 串口日志 + adb shell + sys_config.fex + /proc/partitions 互证
+ *  [A] 实锤：安卓 TTL 串口日志 + adb shell + sys_config.fex + /proc/partitions
+ *            + U-Boot mii/mdio 回显 + 官方 v6.12.119 源码逐字 互证
  *  [B] 公版推断：内核自带 sina31s-sdk.dts（同 SoC 官方开发板，见 ★改动8）
  *  [C] 未实测：照 A31 参考设计猜的，可能需要改 —— 全文搜 ⚠️ 定位
  *
@@ -23,19 +24,22 @@
  *                DLDO1→网口PHY  DLDO4→axp_0  ALDO1→WiFi  DCDC5→DDR3
  *                U-Boot 日志逐字复述: dcdc1 3000 / dcdc2 1200 / dcdc3 1260
  *                                    dcdc4 1240 / dcdc5 1500 / aldo2 1800 / aldo3 3000
- *                ★ 注意：以上是【硬件事实】，不是本文件的建模状态。
- *                  ★改动14 后本文件完全不声明 PMIC，这几路电由 U-Boot
- *                  按 script.bin 配好后内核原样不碰。
+ *                ★改动14：本文件【不】声明 AXP221 节点，内核不建模任何 PMIC 轨；
+ *                          这与「PMIC 硬件存在」不矛盾，U-Boot 按 script.bin 配好后原样保持。
  *    NAND      : H27UBG8T2B x8 MLC，页 8192+640 / 块 2MiB / ECC 20bit@1024B
  *                NAND ID = 4b248889（日志实测），chip_cnt=4
  *                nand_p0=0x28010020  nand_p1=0x00eeeeee（fex [nand0_para]）
- *    PHY       : MDIO 地址 0x01，MII 模式（16 根数据线），RTL8201F 系列
- *                实测 /sys/bus/mdio_bus/devices/ -> sunxi_gmac-0:01
- *                官方 sina31s-sdk.dts 同写 &mdio { phy1: ethernet-phy@1 { reg=<1>; } }
- *                → 【两条独立来源互证】，地址 1 确定无疑
+ *    PHY       : ★改动15 校正 —— 板上真 PHY 是 IC+ IP101A / IP101G（10/100 MII），
+ *                硬件 ID 0x02430C54。U-Boot "mii read 1 2 / 1 3" = 0243 / 0C54，
+ *                "mii info 1" = OUI 0x90C3 Model 0x05 Rev 0x04 100baseT FDX，
+ *                "mii read 1 0-5" range 六值全一致，官方 v6.12.119 icplus.c:67
+ *                逐字 "#define IP101A_PHY_ID 0x02430c54" 双源互证。
+ *                原「RTL8201F 系列」标注【收回】：那只是对 MDIO 地址 1 + MII 的误标，
+ *                地址 0x01、MII 模式（fex gmac_interface=1）仍有效。
+ *                U-Boot 交接态 BMCR 3100 / BMSR 786D = 已上电、Power Down=0、
+ *                Reset 已自清、Link Up、AN Complete、100M 全双工；reg16 = 0000。
  *    WiFi      : RTL8188ETV，USB 0bda:0179，走 USB 自动枚举，DTS 零节点
  *                fex wifi_mod_sel=6 / wifi_usbc_id=1 / wifi_power=axp22_aldo1
- *    BT        : RTL8723BS（日志 rtk_btusb），后补；AP6181 为空贴，永远不提
  *    串口      : UART0 = PH20(TX)/PH21(RX)，115200n8
  *                ★ fex [uart_para] 实锤 + /proc/iomem "01c28000/01c28800 sw_serial"
  *                  上游 sun6i-a31.dtsi 的 uart0_ph_pins 也是这两脚
@@ -68,13 +72,14 @@
  *    eth0  1E:47:EC:5F:E9:D9  ← 由 A31s SID efuse 算出，变则在
  *                                /etc/config/network 里 option macaddr 写死
  *    ★改动5: FEL 启动不跑原厂 U-Boot 的 SID 烧录逻辑，eth0 MAC 可能每次变，
- *            第一阶段就在 OpenWrt 侧写死，【不要】写进 DTS（会与 SID 冲突）
+ *            第一阶段就在 OpenWrt 侧写死，【不要】写进 DTS（会与 SID 冲突）。
+ *            回退轮 ip -d link 实测 02:51:08:04:9a:70，与上面值不同，属已知漂移。
  *
  *  ★改动8（第二轮修正，依据官方 sun6i-a31s-sina31s-sdk.dts）：
  *    1) &gmac pinctrl-0: gmac_pins_mii（猜的）-> gmac_mii_pins（官方实名）
  *    2) &gmac phy-supply 曾改 &reg_dldo1（AXP221 DLDO1，官方名
  *       "vcc-gmac-phy" 3300mV，与 fex gmac_power=axp22_dldo1 吻合）
- *       —— ★改动10 已回退，★改动13 又建真轨，★改动14 最终回退（见正文）
+ *       —— ★改动13 又改过去，★改动14 已回退，原因见下
  *    3) IR: 删掉自造 ir_pl4_pin，改用官方节点 &ir + s_ir_rx_pin
  *       （★改动11 核实：该标签由上游 sun6i-a31.dtsi 的 r_pio 原生提供）
  *
@@ -117,32 +122,89 @@
  *    已核对上游原文，三组 label 名逐字一致，故引用无需改名。
  *    绝不使用 dtc -f 强制输出：重复 label 会让引用落到不确定节点。
  *
- *  ★改动12/13（历史轮，修 gmac 两刀一起落地）：
- *    第一刀（★改动12）：phy1 的 compatible 从通用 Clause 22 换成
- *      文件里早已预留的真实 ID "ethernet-phy-id001c.c915"。
- *      板上实锤 /sys/bus/mdio_bus/drivers/ 里 RTL8201CP / RTL8201F /
- *      Realtek 专用驱动全部已编入内核，不用勾任何包；原通用 compatible
- *      不带 PHY ID，uevent 无 ID，专用驱动没被选中、只绑 Generic PHY。
- *      【★改动14 保留，本轮第一次真正上场验证】
- *    第二刀（★改动13）：电源建模。
- *      - 在 &i2c1 下补最小 AXP221 节点（TWI1 / 0x34，[A] 级 fex 实锤），
- *        只声明 DLDO1 一路 regulator，标签 reg_dldo1 由本文件自己定义，
- *        不重新 include core dtsi（自带 /dts-v1/ 会重演 ★改动9）。
- *      - &gmac 的 phy-supply 从假的 reg_vcc3v3 换成 &reg_dldo1，
- *        让内核能真正 enable 这路电，而不只是账本上记 3300mV。
- *      - &pio 补 vcc-pa-supply（PA bank = MII 18 根脚所在组），
- *        消除补3 实测里挂在 regulator-dummy 下的状态。
- *      - 其余六路电压【故意不注册】：U-Boot 已按 script.bin 配好，
- *        不注册就不会被内核在 late_init 关掉，避免引入掉电变量。
- *    上游符号已核：&i2c1（sun6i-a31.dtsi 的 i2c@01c2b000，默认 disabled）、
- *      &r_intc（2021 起由 nmi_intc 改名）、axp20x-i2c 驱动 of_match 明确
- *      支持 "x-powers,axp221"、axp22x.dtsi 里 DLDO1 子节点名为 dldo1。
- *    本文件【不】include axp22x.dtsi：只建模一路，标签自给自足，
- *      避免整包 regulator 节点带来的重复标签与未用轨被关风险。
- *    ⚠️ 以上第二刀（★改动13）已于 ★改动14 【整段回退】，
- *      回退理由、板上实锤锚点、验收口见正文「★改动14」留档段。
- *    ⚠️ 两刀全对也不保证 eth0 的 "Failed to reset the dma" 一次消失：
- *      6.12.119 没有 6.18+ 的 phylink_prepare_resume() 那批补丁。
+ *  ★改动12/13（第六轮，两刀一起落地）—— 【本轮都已修正/回退，留档不抹账】
+ *    第一刀（★改动12）：phy1 的 compatible 换成 "ethernet-phy-id001c.c915"。
+ *      原意是让专用 PHY 驱动被选中，治 "Failed to reset the dma"。
+ *      后经源码 + 板上双重考证【判定写错，见 ★改动15】：该 ID 是 Realtek
+ *      RTL8211E 千兆 PHY，且 DT 带 ethernet-phy-idXXXX.XXXX 时内核走
+ *      phy_device_create() 直接注入、不读硬件 MDIO（官方 v6.12.119
+ *      fwnode_mdio.c / phy_device.c 逐字），sysfs 的 phy_id 是自证循环。
+ *    第二刀（★改动13）：在 &i2c1 下补 AXP221 最小节点 + DLDO1 真轨，
+ *      &gmac phy-supply 指向它、&pio 补 vcc-pa-supply。
+ *      上板 r8359 实锤：AXP221 读 ID 成功，但第一笔 I2C 写起
+ *      "I2C bus locked, block: 1, time_left: 0"（3.859245 起每 2.080s 共 16 次），
+ *      35.072531 "Failed to register dldo1" → 12.027480 gmac deferred probe
+ *      pending → 第一刀挂空挡。干净 rebind 三次复现同模式，结构性不通。
+ *
+ *  ★改动14（第七轮，回退第二刀）—— 板上已验，当前基线
+ *    改动（四处，全在本文件）：
+ *      1) &gmac 的 phy-supply 由 &reg_dldo1 改回 &reg_vcc3v3
+ *      2) 删掉 &i2c1 下整个 pmic@34（axp22x / dldo1）段，&i2c1 回到上游
+ *         默认 disabled，内核不实例化这条总线上的任何设备
+ *      3) 删掉 &pio 的 vcc-pa-supply（PA bank 回到 regulator-dummy，预期回归）
+ *      4) 删掉只为 pmic@34 引入的 irq.h 头文件
+ *    依据：官方 sun6i-a31.dtsi 的 gmac 节点本就不写 phy-supply，
+ *      整份 dtsi 无 vcc3v3 / reg_vcc —— 「内核不通过 regulator 管这路网口电」
+ *      就是上游基线，回退不是砍功能。
+ *    回退轮锚点：rootfs 236,910,592 B / 0xE1EF800；
+ *      fdt-1 23,988 B / crc32 160ad042 / sha1 efb7d0a272bbb1b6a1a9b65f9bc17a07e952fee6
+ *      （DTS 改过，与 r8359 的 1bfa040b / f3476665... 不同，确认没吃缓存旧 dtb）；
+ *      kernel sha1 6325d60d765f6f70d6fbf587c6d3e909b65fd79c。
+ *      内核版本串仍是 6.12.119 ... Thu Nov 26 02:26:57 2026 / r8359-bc7f99dd4，
+ *      与 r8359 逐字相同 —— 【锚点只能靠 FIT hash，不能靠版本串】。
+ *    板上结果：无 I2C bus locked / 无 dldo1 / devices_deferred 空 /
+ *      1.770106 打出 DWMAC1000 / 4.183049 绑 RTL8211E 千兆（错驱动，注入所致）；
+ *      39.899343 "Failed to reset the dma" 回归老基线红点；
+ *      0bda:0179 仍无枚举、wlan0 仍无。
+ *      DT 级复核：i2c@1c2b000/status = disabled、pmic@34 与 supply 属性均无匹配、
+ *      ethernet@1c30000/phy-supply 与 regulator-vcc3v3/phandle 同为 0x24。
+ *
+ *  ★改动15（本轮，唯一改动）—— 第一刀改回通用 c22，让内核真读硬件 ID
+ *    证据链（板上逐字 + 官方 v6.12.119 源码逐字）：
+ *      U-Boot "mii read 1 2 / 1 3" = 0243 / 0C54 → PHYID 0x02430C54；
+ *      "mii dump 1 0/1" pretty-print 与逐位解读一致（Power Down=0 / Link Up /
+ *      AN Complete / 100M FDX）；"mii read 1 0-5" range 六值全一致；
+ *      "mii read 1 16" = 0000（IP10XX_SPEC_CTRL_STATUS，APS 未开）；
+ *      "mdio list" = ethernet@1c30000: 1 - Generic PHY（U-Boot 侧绑定，
+ *      与内核侧 DT 注入硬绑 RTL8211E 是两回事，别混）。
+ *      官方 icplus.c:67 "#define IP101A_PHY_ID 0x02430c54"；驱动表两条
+ *      "ICPlus IP101A" / "ICPlus IP101G"，用 ip101a_g_has_page_register()
+ *      写 reg20 探测区分二者 —— 不预判最终绑哪条。
+ *      MDIO 统计（回退轮内核侧）：transfers 41 / reads 24 / writes 17 / errors 0，
+ *      mdio_bus.c 的 device 级组只统计 addr=1；但 0 errors 不等于读到有效数据
+ *      （从机不响应读回 0xFFFF 是正数，照样计 reads 不计 errors）。
+ *    改动：&mdio 的 phy1 只把 compatible 从
+ *      "ethernet-phy-id001c.c915" 换成 "ethernet-phy-ieee802.3-c22"。
+ *      官方 of_mdiobus_child_is_phy() 认 c22 → fwnode_mdiobus_register_phy()
+ *      里 fwnode_get_phy_id() 对该串返回 -EINVAL → 走 get_phy_device()
+ *      真读 MII_PHYSID1/2，顺带把「MDIO 通不通」一起验了。
+ *      （整行删掉 compatible 等价，但留 c22 更贴近上游写法。）
+ *      reg = <1> / phy-mode = "mii" / phy-handle / phy-supply 全部不动。
+ *    一次只动一个变量：第一刀这一处之外，.config / yml / diy-part2.sh /
+ *      kernel-patches/ 的 999-mv64xxx 补丁（已上板判无效、无害）一律不动。
+ *    验收口（进 shell 后按顺序）：
+ *      1) cat /sys/bus/mdio_bus/devices/stmmac-0:01/phy_id → 期望 0x02430c54
+ *         若 PHY 注册失败 / 读回全 1，反而直接坐实内核阶段 MDIO 或 PHY 有问题
+ *      2) cat 同目录 uevent、dmesg | grep -i -E 'ip101|icplus|PHY|stmmac'
+ *         → 期望驱动名 ICPlus IP101A 或 ICPlus IP101G，不再是 RTL8211E
+ *      3) dmesg | grep -i 'Failed to reset' → 看 DMA 红是否消失
+ *      4) 查看 /sys/class/net 下的接口 → 看 eth0 是否真起来
+ *    已知源码侧预期动作（不是异常）：绑上正确驱动后 ip101a_config_init()
+ *      会 phy_set_bits(phydev, 16, BIT(1)) 开 Auto Power Saving，
+ *      reg16 由 0000 变 0002 属正常；APS 是否影响 RXC 上板前不预判。
+ *    诚实代价：DMA 红可能仍在。6.12 stmmac_main.c:1228 设
+ *      mac_requires_rxc = true、mac_managed_pm = true，缺 6.18+ 那批
+ *      phylink_prepare_resume() 补丁 → 「内核 probe→open 之间把 PHY 挂起、
+ *      RXC 断掉 → dwmac_dma_reset() 写 SWR 后 200ms 不自清」仍是开着的推断，
+ *      不是结论。若红还在，下一刀才轮到源码侧查 PM / 给 MAC 打 resume，
+ *      【不是】把 ★改动13 的 TWI1 I2C 运行时注册原样贴回来。
+ *    判定口径（用户拍板）：网口 + WiFi 都能用且固件正常运行 → I2C 这条线
+ *      就不再回来；只有 DMA 红还在 / 0bda:0179 仍不枚举，才坐实必须回头攻电，
+ *      且那时也应换实现（U-Boot 侧确认 DLDO1/ALDO1、PHY resume、时钟侧）。
+ *      U-Boot 阶段 PHY 已 link up 说明 U-Boot 按 script.bin 配的电够用，
+ *      把「必须内核建模 DLDO1」推得更远，但不是证伪供电变量本身。
+ *    WiFi 不在这轮范围：一次只动一个变量。0bda:0179 双阶段不枚举、
+ *      ALDO1 未建模是原有缺口，等网口这轮出结论再单独开线。
  *
  *  编译与运行：
  *    1) 放到内核树 arch/arm/boot/dts/allwinner/sun6i-a31s-mars-a31s.dts
@@ -153,7 +215,7 @@
  *       sunxi-fel write 0x43000000 <上面的bin> && sunxi-fel bootz 0x43000000
  *       地址 0x43000000 取自本机 U-Boot 日志 "fatload nand 0 43000000 script.bin"
  *       ★ 注意：上面第 4 条是旧版设计的历史记录，与板上实测跑通的
- *         FIT + TFTP 222MB + rdinit 链不符，【不要照它改回去】。
+ *         FIT + TFTP 裸 cpio + rdinit 链不符，【不要照它改回去】。
  *    5) 全程只写 RAM，断电即恢复原安卓，NAND 一个字节不动
  *
  *  历史坑（别再踩）：
@@ -167,11 +229,15 @@
  *    x GMAC 组名曾写 gmac_pins_mii（猜）-> ★改动8 官方实为 gmac_mii_pins
  *    x PHY 供电曾挂自造 3.3V -> ★改动8 改 &reg_dldo1 -> ★改动10 删 core dtsi
  *      后该标签无定义源，回退 reg_vcc3v3 -> ★改动13 改为本文件自建真轨
- *      -> ★改动14 整段回退到 reg_vcc3v3（r8359 上板实锤 I2C 结构性不通）
+ *      -> ★改动14 整刀回退（I2C 结构性不通），当前 phy-supply = &reg_vcc3v3
+ *    x PHY 型号曾标 RTL8201F / 曾注入 RTL8211E 的 ID -> ★改动15 收回，
+ *      板上真身 IC+ IP101A/G，ID 0x02430C54，改回通用 c22 真读 MDIO
  *    x 照抄官方 sina31s 的 LED(PH13)/HDMI/OTG -> 本机 PH13 是卡刷键、HDMI 是 GM7121
  *    x 曾自造 gmac_mii_pins / s_ir_rx_pin / uart0_ph20_pins 三组
  *      -> 上游全有，重名致 dtc duplicate_label 中断（★改动11 已删）
  *    x dd bs=1M 在安卓 toybox 失效 -> 必须 bs=1024，也不认 status=progress
+ *    x 注释里出现 glob 星号斜杠会被 cpp 当成注释结束符提前闭合，
+ *      残留文本变成代码（★改动10 附带修复）—— 本文件注释内不写该串
  * ============================================================
  */
 
@@ -189,8 +255,7 @@
  * 删掉它【不丢任何符号】：
  *   sun6i-a31s.dtsi            -> 上一行已直接 include（SoC/&pio/&gmac/&ir/&uart0）
  *   sunxi-common-regulators    -> 本文件自带 reg_vcc3v3 / reg_vcc5v
- *   &reg_dldo1                 -> ★改动13 曾自建真轨，★改动14 已删除；
- *                                本文件不再引用该标签，也不需要 core dtsi
+ *   &reg_dldo1                 -> ★改动14 已整刀回退，当前无任何引用
  *   &mdio                      -> 标签本就来自 SoC dtsi，只需补 PHY 子节点
  *   gmac_mii_pins/s_ir_rx_pin  -> 上游 sun6i-a31.dtsi 原生提供，
  *                                ★改动11 已删本文件自造的重复附录
@@ -198,9 +263,6 @@
  */
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/pinctrl/sun4i-a10.h>
-/* ★改动14: 原 #include <dt-bindings/interrupt-controller/irq.h> 已删 ——
- *   它只为 pmic@34 的 IRQ_TYPE_LEVEL_LOW 引入，PMIC 节点回退后全文
- *   再无 IRQ_TYPE_ 系宏引用，留着只会让人误以为还有中断子节点。 */
 
 /*
  * 注意：KEY_* / LED_FUNCTION_* 这几个宏的头文件路径在内核版本间挪过位置。
@@ -268,12 +330,11 @@
      *  主线 sunxi 驱动（USB PHY / MMC / 音频）会去查这些 supply，
      *  不声明会刷一堆 "XXX supply not found, using dummy regulator" 的噪声。
      *  这些是板子上本来就有的固定 3.3V/5V，不是 PMIC 可调轨。
-     *  ★改动14 回退后：网口 PHY 的 phy-supply 指回 reg_vcc3v3
-     *    （★改动10 后已上板验过的老基线）。这是 always-on 固定轨：
-     *    内核账本记 3300mV，物理上不做任何开关动作；DLDO1 由 U-Boot
-     *    按 script.bin 配好后原样保持，内核不接管这路电。
-     *    官方 sun6i-a31.dtsi 的 gmac 连 phy-supply 都不写 —— 不通过
-     *    regulator 管这路电本来就是上游基线，回退不是砍功能。
+     *  ★改动14 后：&gmac 的 phy-supply 已回退到 reg_vcc3v3，
+     *    这是无 GPIO 的 always-on 假轨，内核账本记 3300mV、物理上不动作；
+     *    这是官方 sun6i-a31.dtsi 的本来形态（gmac 不写 phy-supply），
+     *    U-Boot 按 script.bin 配好的 DLDO1 电压原样保持，内核不碰。
+     *    回退轮 regulator_summary 实锤 1c30000.ethernet-phy 挂在 vcc3v3 下。
      * ======================================================== */
     reg_vcc3v3: regulator-vcc3v3 {
         compatible = "regulator-fixed";
@@ -371,76 +432,28 @@
  *    - 后两者与上游 label 重名 -> dtc 报 duplicate_label（第三个红点）
  *    - 自造 IR 组还挂错控制器、function 写错、MII 引脚列表也不对
  *  引用直接改用上游标签，一个硬件值都没重猜。
+ *
+ *  ★改动14: &pio 的 vcc-pa-supply 也已删除（原本指向 dldo1）。
+ *    PA bank 回到 regulator-dummy，回退轮 1.561043 的
+ *    "supply vcc-pa not found, using dummy regulator" 是预期回归，不是故障。
  * ============================================================ */
 
 /* ============================================================
- *  ★改动14（本轮，回退第二刀 / 方案 B）—— 原第二刀位置，现【纯留档，无节点】
+ *  ★改动13 的 &i2c1 / pmic@34 / dldo1 整段【已由 ★改动14 删除】。
  *
- *  锚点：r8359 / rootfs 0xE1E7C00 / 内核 6.12.119
- *        sha1 1f49c48421e382afe09c369490926c8704b69993 / 2026-11-26
+ *  留档原因（不抹账）：该刀曾上板 r8359，AXP221 读 ID 成功但
+ *  I2C bus locked 三次独立复现（开机 / bind / rebind），dldo1 注册失败
+ *  导致 gmac deferred probe pending。本机 TWI1 / 0x34 的硬件依据仍成立，
+ *  但「在 TWI1 上靠 I2C 运行时注册 regulator」这条实现层已判定结构性不通。
  *
- *  原 ★改动13 在这里铺过：&i2c1 { status="okay"; axp22x: pmic@34 {...} }
- *  （含 regulators { reg_dldo1: dldo1 { regulator-name = "vcc-gmac-phy"; } }）、
- *  &pio { vcc-pa-supply = <&reg_dldo1>; }、&gmac 的 phy-supply = <&reg_dldo1>。
- *  以上【整段删除】，本文件现在对 &i2c1 / &pio 零补充。
+ *  当前状态：&i2c1 保持上游 sun6i-a31.dtsi 默认 status = "disabled"，
+ *  本文件不写任何 &i2c1 覆盖段、不写任何 PMIC 节点、不写 vcc-pa-supply，
+ *  也不 include axp22x.dtsi 或 core dtsi。内核本轮完全不碰这条 I2C 总线。
+ *  回退轮板上 DT 级复核：i2c@1c2b000/status = disabled，
+ *  pmic@34 与 supply 属性 glob 均无匹配。
  *
- *  板上实锤（r8359 已进 root@LEDE:/#，逐字日志，按时间先后）：
- *    1.565529 sun7i-dwmac 1c30000.ethernet: Error applying setting, reverse things back
- *    1.755950 axp20x-i2c 0-0034: AXP20x variant AXP221 found（读 ID 成功）
- *    3.859245 起 "mv64xxx: I2C bus locked, block: 1, time_left: 0"
- *             每 2.080s 一次共 16 次，到 35.059
- *    35.072531 axp20x-regulator: Failed to register dldo1 / probe -110
- *    12.027480 platform 1c30000.ethernet: deferred probe pending
- *    irq 241 (GICv2 39 Level mv64xxx_i2c) 恒 0；
- *    开机 / bind 841.379 / 干净 rebind 1319.733 三次独立复现模式一致
- *    → PM 状态、时钟、复位、probe 顺序逐个排除，结构性，非运行时可救
- *
- *  结论：第二刀的【实现层】（TWI1 上靠 I2C 运行时注册 DLDO1）已确认走不通。
- *    【目标层】（内核是否必须管这路 PHY 电）从未验过 —— 正因为 gmac
- *    被 defer 挡住，第一刀连 DWMAC1000 都没打出来、3 侧连 0bda:0179
- *    枚举行都没有。本轮换 B：先把这两个读数拿到。
- *
- *  硬依据：官方 sun6i-a31.dtsi 的 gmac 根本不写 phy-supply，整份 dtsi
- *    连 vcc3v3 / reg_vcc 一次都不出现 → "内核不通过 regulator 管网口电"
- *    就是上游本来形态；reg_vcc3v3 是本文件造的 always-on 假轨，
- *    第二刀才是额外加的。回退不是砍功能，是回到厂线基线。
- *    U-Boot 已按 script.bin 配好 DLDO1 / ALDO1，内核不碰 = 原样保持；
- *    没建模 ≠ 没电。第二刀只建了 DLDO1，ALDO1 一个字没写，
- *    vcc-pa-supply 是 PA bank IO 供电、与 WiFi 无关。
- *
- *  本文件实际改动（仅此一处文件）：
- *    1) &gmac  phy-supply: &reg_dldo1 -> &reg_vcc3v3（回 ★改动10 老基线）
- *    2) 删除整段 &i2c1 / pmic@34 —— 上游 i2c1 默认 disabled，
- *       删后内核连 mv64xxx_i2c 控制器都不实例化，I2C 这条线不再参与
- *    3) 删除 &pio 的 vcc-pa-supply 整段 —— PA bank 回到 regulator-dummy，
- *       是预期回归，不是新故障
- *    4) 删除仅为 pmic@34 引入的 irq.h include（全文已无 IRQ_TYPE_ 宏）
- *
- *  一字未动：★改动12 第一刀的 PHY ID compatible、USB 四通道、
- *    reg_vcc3v3 / reg_vcc5v 固定轨、NAND/MMC 不写、
- *    无线栈（在 diy-part2.sh / .config，不进本文件）、
- *    kernel-patches/999-mv64xxx 补丁（已上板判无效但无害，本轮留着，
- *    不制造第二个变量）。
- *
- *  验收口（按顺序，上板只发关键几行，别贴全屏）：
- *    1) dmesg | grep -i 'I2C bus locked' 应为空，且无 Failed to register dldo1
- *    2) cat /sys/kernel/debug/devices_deferred -> 1c30000.ethernet 消失
- *    3) dmesg | grep -i -E 'DWMAC|stmmac|Failed to reset|PHY'
- *       -> 打出 DWMAC1000 / PHY 绑定，第一刀第一次真验
- *    4) dmesg | grep -i -E '0bda|0179|wlan' + ls /sys/class/net
- *       -> 3 第一次干净枚举机会
- *    5) cat /sys/kernel/debug/regulator/regulator_summary 作对照
- *
- *  判定口径：网口 + WiFi 都能用且固件正常使用不受影响 -> I2C 这条线
- *    不再回来；只有 DMA 红还在 / 0bda:0179 仍不枚举，才坐实必须回来
- *    攻电，且带着「第一刀和 3 已独立排除」的干净基线。
- *
- *  诚实代价：Failed to reset the dma 大概率回来（老基线红点，不是新故障）；
- *    ALDO1 继续不建模，WiFi 靠 U-Boot 配的电压碰运气。
- *    fdt-1 的 crc32 / sha1 本轮必然变化（DTS 改了），若与 r8359 的
- *    1bfa040b / f3476665774fefc39f51119a62f291c8538c10e6 相同，
- *    说明编进的是缓存旧 dtb。bootm 的 SIZE 用本轮 Bytes transferred，
- *    不要复用 0xE1E7C00。
+ *  ★改动14 同时删掉了只为 pmic@34 的 IRQ_TYPE_LEVEL_LOW 引入的 irq.h，
+ *  全文再无该宏引用；本轮 ★改动15 也不重新引入。
  * ============================================================ */
 
 /* ============================================================
@@ -461,32 +474,34 @@
  *  GMAC —— 百兆以太网
  *
  *  [A] 实测依据：
- *      /sys/class/mdio_bus/        -> sunxi_gmac-0
- *      /sys/bus/mdio_bus/devices/  -> sunxi_gmac-0:01   ← PHY 地址 = 1
+ *      /sys/class/mdio_bus/        -> stmmac-0
+ *      /sys/bus/mdio_bus/devices/  -> stmmac-0:01   ← PHY 地址 = 1
  *      /proc/iomem "01c30000-01c31054 : sunxi_gmac" 印证基址
  *      fex [gmac_para] gmac_interface=1 (MII，16 根数据线，非 RMII)
  *                      gmac_power = "axp22_dldo1"
+ *      U-Boot "mii read 1 2 / 1 3" = 0243 / 0C54  → PHYID 0x02430C54
  *  [B] 官方 sina31s-sdk.dts 同款写法：
  *      pinctrl-0 = <&gmac_mii_pins> / phy-mode = "mii" /
- *      phy-handle = <&phy1> / phy-supply = <&reg_dldo1>
+ *      phy-handle = <&phy1>
  *
- *  ★改动10 -> ★改动13 -> ★改动14（最终态）：
- *    ★改动10 因删 core dtsi 后 &reg_dldo1 成悬挂引用，回退到 reg_vcc3v3；
- *    ★改动13 自建 &reg_dldo1 真轨试图让内核接管 DLDO1，r8359 上板
- *    证明这条实现路径结构性走不通（I2C 锁死 → dldo1 注册 -110 →
- *    gmac deferred probe pending），详见上方 ★改动14 留档段。
- *    ★改动14 回到 ★改动10 的 reg_vcc3v3 基线，让 gmac probe 能走完，
- *    第一刀（★改动12）才第一次真正上场。
- *    reg_vcc3v3 是无 GPIO 的 always-on 假轨，账本 3300mV、物理不动作；
- *    DLDO1 由 U-Boot 按 script.bin 配好后原样保持。这符合官方 dtsi
- *    gmac 不写 phy-supply 的上游形态，回退不是砍功能。
+ *  phy-supply 沿革（四轮，当前停在 ★改动14）：
+ *    ★改动8 指 &reg_dldo1 → ★改动10 删 core dtsi 后标签悬挂，
+ *    临时回退 reg_vcc3v3 → ★改动13 本文件自建 &reg_dldo1 真轨
+ *    → ★改动14 整刀回退到 &reg_vcc3v3。
+ *    官方 sun6i-a31.dtsi 的 gmac 根本不写 phy-supply，整份 dtsi 无
+ *    vcc3v3 / reg_vcc —— 本行是板级额外加的假轨，不是上游必需项。
+ *    回退理由与板上结果见文件头 ★改动14，此处不重复。
+ *
+ *  39.899343 "Failed to reset the dma" 是回退轮老基线红点（非新故障）：
+ *    stmmac_init_dma_engine() 调 stmmac_reset() → dwmac_dma_reset() 写
+ *    DMA_BUS_MODE_SFT_RESET 后 readl_poll_timeout(10ms, 200ms) 等自清超时。
+ *    官方 stmmac_main.c:1228 设 mac_requires_rxc = true。根因未坐实，
+ *    ★改动15 先修「绑错驱动」这一个变量。
  *
  *  若 ifconfig eth0 up 报 "PHY connection failure"，【一次只动一个变量】：
  *    1) 确认 gmac_mii_pins 由上游 sun6i-a31.dtsi 提供（★改动11 已核对原文）
  *    2) 才去试 phy-mode = "rmii" + rmii 引脚组
- *    3) ★改动14 后内核不注册任何 AXP221 轨；查 U-Boot 已配电压只能回
- *       原厂侧读，或对照 /sys/kernel/debug/regulator/regulator_summary
- *       确认只有 regulator-dummy / vcc3v3 / vcc5v（预期，不是故障）
+ *    3) 查 PHY 是否被内核挂起（对照 U-Boot 的 BMCR 3100 / BMSR 786D）
  *       ★改动10 附带修复：原写法含 glob 星号斜杠，会被 cpp 当成注释结束符
  *       提前闭合本注释块，残留文本变成代码，又是下一个语法红点。
  * ============================================================ */
@@ -495,7 +510,7 @@
     pinctrl-0 = <&gmac_mii_pins>;                   /* ★改动8: 官方实名 */
     phy-mode = "mii";                               /* [A] 16 根数据线 = MII */
     phy-handle = <&phy1>;                           /* ★改动8: 与官方标签对齐 */
-    phy-supply = <&reg_vcc3v3>;                     /* ★改动14: 回退到老基线 */
+    phy-supply = <&reg_vcc3v3>;                     /* ★改动14: 回退到假轨/上游基线 */
     status = "okay";
 };
 
@@ -510,16 +525,25 @@
     phy1: ethernet-phy@1 {
         reg = <1>;                                  /* [A] 实测地址，非 0 */
         /*
-         * ★改动12（修 gmac 第一刀）：
-         *   板上实锤 /sys/bus/mdio_bus/drivers/ 里 RTL8201CP / RTL8201F /
-         *   Realtek 专用驱动全部已编入内核，不用勾任何包；但原通用
-         *   "ethernet-phy-ieee802.3-c22" 不带 PHY ID，uevent 无 ID，
-         *   专用驱动没被选中、只绑到 Generic PHY。
-         *   换成原注释里已预留的真实 ID（照抄现成值，不新编符号名）。
-         *   ★改动14 保留此刀；配套电源建模已回退，第一刀本轮独立验证，
-         *   不再与 PMIC 绑定。
+         * ★改动15（本轮唯一改动，替代 ★改动12）：
+         *   ★改动12 写 "ethernet-phy-id001c.c915" 是【错的】——
+         *   那是 Realtek RTL8211E 千兆的 ID，且 DT 带该串时内核走
+         *   phy_device_create() 直接注入、不读硬件 MDIO
+         *   （官方 v6.12.119 fwnode_mdio.c / phy_device.c 逐字实锤）。
+         *   U-Boot "mii read 1 2 / 1 3" = 0243 / 0C54 才是板上真值
+         *   → PHYID 0x02430C54 = IC+ IP101A / IP101G（10/100 MII）。
+         *
+         *   改回通用 c22：官方 of_mdiobus_child_is_phy() 认该串 →
+         *   fwnode_mdiobus_register_phy() 里 fwnode_get_phy_id() 对 c22
+         *   返回 -EINVAL → 走 get_phy_device() 真读 MII_PHYSID1/2，
+         *   顺带把「内核阶段 MDIO 通不通」一起验了。
+         *   （整行删掉 compatible 等价，但留 c22 更贴近上游写法。）
+         *
+         *   期望绑到 icplus.c 的 "ICPlus IP101A" 或 "ICPlus IP101G"，
+         *   两者由 ip101a_g_has_page_register() 写 reg20 探测区分，不预判。
+         *   详细证据链、验收口与诚实代价见文件头 ★改动15。
          */
-        compatible = "ethernet-phy-id001c.c915";
+        compatible = "ethernet-phy-ieee802.3-c22";
     };
 };
 
@@ -541,12 +565,15 @@
  *  日志显示 WiFi 在总线 1 -> EHCI1/OHCI1。fex wifi_usbc_id=1 印证。
  *  官方 sina31s 也开 ehci0/ehci1/ohci1，策略互相印证（本文件多开 ohci0，
  *  全速兼容、无设备不枚举，无副作用）。
+ *  回退轮实测 U 盘在 usb 2-1（EHCI 1c1b000，bus 2），编号漂移不影响判断。
  *
  *  [A] VBUS：fex [usbc0]/[usbc1] usb_drv_vbus_gpio 为空 -> PMU 直供；
  *      只有 [usbc2] 用 PC27。故 USB0/1 写常开 5V 是对的。
  *      若 lsusb 看不到 0bda:0179，九成是 AXP221 ALDO1（wifi_power）没开，
- *      ★改动14 后内核不建模 ALDO1，只能回 U-Boot / 原厂侧查这路电压，
- *      不要盲写 GPIO（写错脚会把 USB 口电搞反）。
+ *      【不要】盲写 GPIO（写错脚会把 USB 口电搞反）。
+ *      r8359（有 DLDO1 真轨）与回退轮（PMIC 整段删掉）双轮都没有
+ *      0bda:0179 枚举行 → 「内核是否建模 DLDO1」这个变量已排除；
+ *      ALDO1 未建模是原有缺口，本轮 ★改动15 不涉及 WiFi，单独开线再验。
  * ============================================================ */
 &usbphy {
     status = "okay";
@@ -600,16 +627,13 @@
  *  【AP6181 / 触摸屏 / 摄像头 / 3G / G-sensor】—— 空贴或未装配
  *     fex 里 rtp/ctp/lcd/vip/3g/gsensor 全 used=0，一个字都不要加。
  *
- *  【AXP221 全部 regulator 轨】—— ★改动14 后本文件【完全不声明】PMIC。
- *     &i2c1 / pmic@34 / dldo1 / vcc-pa-supply 全部删除，I2C 总线回到
- *     上游 disabled，内核连 mv64xxx_i2c 控制器都不实例化（r8359 实锤的
- *     16 次 "I2C bus locked" 这条线本轮起不再参与）。
- *     DCDC1~5 / ALDO1~3 / ELDO 等当然也不注册：
- *     U-Boot 按 script.bin 配好七路电压，不注册就不会被内核改动。
- *     尤其 ALDO1（WiFi 供电）仍未建模 —— 没建模 ≠ 没电，这是原有缺口，
- *     与本次回退无关；WiFi 能否枚举仍靠 U-Boot 配的电压碰运气。
- *     完整七路映射等 b_nandc.bin 原厂 DTB 比对后再补；手写容易把
- *     DLDO1(网口)/ALDO1(WiFi) 配错导致外设没电。
+ *  【AXP221 全部 regulator 轨】—— ★改动14 后本文件【完全不声明】PMIC 节点。
+ *     硬件上 AXP221 在 TWI1 / 0x34（fex 实锤），U-Boot 已按 script.bin
+ *     配好七路电压；内核不注册就不会在 late_init 关掉它们。
+ *     尤其 ALDO1（WiFi 供电）仍未建模，是 0bda:0179 不枚举的原有缺口，
+ *     等 WiFi 单独开线时再评估。完整七路映射等 b_nandc.bin 原厂 DTB
+ *     比对后再补；手写容易把 DLDO1(网口)/ALDO1(WiFi) 配错导致外设没电。
+ *     ★改动13 那套「TWI1 + I2C 运行时注册 dldo1」已上板证死，别贴回来。
  *
  *  【红灯 GPIO】—— TODO
  *     六组扫过无反应 + /sys/class/leds 不存在。要么在 PB/PD/PE，
@@ -632,10 +656,11 @@
  *    &ir   { pinctrl-0 = <&s_ir_rx_pin>;  }  不改
  *  删除自造定义后，引用自动落到上游正确节点。
  *
+ *  ★改动13 曾给 &pio 补过 vcc-pa-supply（supply 属性，不是引脚组），
+ *  ★改动14 已一并删除，当前本文件无任何 &pio 覆盖段。
+ *
  *  【不要再往这里加自定义引脚组】—— 需要新组时先查上游
  *  arch/arm/boot/dts/allwinner/sun6i-a31.dtsi 的 pio / r_pio 节点。
- *  （★改动13 曾给 &pio 补过 supply 属性，★改动14 已删除；本文件现在
- *    对 &pio 零补充，引用全部落到上游节点。）
  * ============================================================ */
 
 /*
@@ -650,4 +675,17 @@
  *       option name 'eth0'
  *       option macaddr '1E:47:EC:5F:E9:D9'
  * 原因：FEL 启动不跑原厂 U-Boot 的 SID 烧录逻辑，eth0 MAC 可能每次变。
+ *
+ * ===== 下轮上板注意（★改动15 轮）=====
+ * - DTS 改过 → fdt-1 的 crc32 / sha1 必然不再是回退轮的
+ *   160ad042 / efb7d0a272bbb1b6a1a9b65f9bc17a07e952fee6；
+ *   iminfo 仍应 hash OK，若 hash 没变 = 编进了缓存旧 dtb，别往下走。
+ * - bootm 的 SIZE 用本轮 tftpboot 回显的 Bytes transferred，
+ *   别复用回退轮的 0xE1EF800；FIT 与裸 cpio 必须同轮全换。
+ * - U-Boot 环境变量断电全失，整条重敲；编译日志顺手核
+ *   503-backports-adapt-stable-wireless-apis.patch 已应用、
+ *   不再出现删 shim 的 999；sdcard boot.scr 红点照红照收。
+ * - 关机前另存完整串口日志，U-Boot mii 只读轮锚点
+ *   （PHYID 0x02430C54 / BMCR 3100 / BMSR 786D / reg16 0000）
+ *   与本轮 fdt hash 一起记，别和 r8359 / 回退轮混用。
  */
