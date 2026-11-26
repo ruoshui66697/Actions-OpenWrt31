@@ -155,55 +155,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 echo "[diy-part2] 第 4 步（dtb-y 插入）已移交 yml 的 Inject step，本脚本不处理。"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4b) 把 mac80211 构建补丁铺进仓库 B 的源码树（patches/build/ 子目录）
-#
-#     ★ 这一段不是第 4 步那个 dtb-y：写的是【clone 出来的源码树】，
-#       build_dir 还没解压也能写；dtb-y 写的是解压后的内核树，两者不冲突。
-#
-#     正本   : 仓库 A 的 patches/999-*.patch（补丁正文由仓库 A 提供，
-#              本脚本只负责搬运，不生成、不拼接补丁内容）
-#     落点   : package/kernel/mac80211/patches/build/
-#     机制   : lede master 的 mac80211/Makefile 在 CONFIG_LINUX_6_12=y 时
-#              PKG_VERSION:=6.18.39 / PATCH_DIR:=./patches；
-#              Build/Patch 第 400 行
-#                $(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/build,build/)
-#              → 该目录补丁在 backports 解压后自动应用。
-#              不用改 yml、不用新增 step、不碰 build_dir。
-#     编号   : 999- 排现有 23 个补丁（最大 502）之后，最后应用不被覆盖，
-#              避开 500 段，将来同步上游不撞名。
-#
-#     ★ set -e 下：正本缺失 / 落地为空 一律早失败，
-#       不制造"以为铺了其实没铺"的假绿（与第 1 步 DTS 同纪律）。
-#       用 999-*.patch 通配，补丁具体文件名由下一步定，本脚本不写死。
-# ─────────────────────────────────────────────────────────────────────────────
-PATCH_SRC_DIR="$SCRIPT_DIR/patches"
-PATCH_DST_DIR="package/kernel/mac80211/patches/build"
 
-shopt -s nullglob
-PATCH_FILES=( "$PATCH_SRC_DIR"/999-*.patch )
-shopt -u nullglob
-
-if [ "${#PATCH_FILES[@]}" -eq 0 ]; then
-    echo "[diy-part2] 错误：仓库 A 缺少补丁正本 $PATCH_SRC_DIR/999-*.patch"
-    echo "[diy-part2]       补丁正文由仓库 A 的 patches/ 目录提供，本脚本只搬运。"
-    echo "[diy-part2]       请确认 patches/999-*.patch 已提交后再跑 workflow。"
-    exit 1
-fi
-
-mkdir -p "$PATCH_DST_DIR"
-for f in "${PATCH_FILES[@]}"; do
-    base="$(basename "$f")"
-    cp -f "$f" "$PATCH_DST_DIR/$base"
-    [ -s "$PATCH_DST_DIR/$base" ] || {
-        echo "[diy-part2] 错误：补丁落地为空 $PATCH_DST_DIR/$base"; exit 1;
-    }
-    echo "[diy-part2] mac80211 补丁已铺入 -> $PATCH_DST_DIR/$base ($(stat -c%s "$PATCH_DST_DIR/$base") bytes)"
-done
-
-echo "[diy-part2] ---- 仓库B 的 patches/build/ 999 段 ----"
-ls -l "$PATCH_DST_DIR"/999-*.patch
-echo "[diy-part2] ---- 编译阶段请在日志确认 backports 应用了 999 段补丁 ----"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4c) 把【内核补丁】搬进仓库 B 的 target/linux/sunxi/patches-6.12/
