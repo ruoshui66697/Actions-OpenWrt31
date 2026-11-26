@@ -23,6 +23,8 @@
 #   本脚本能做的（此时内核树【不存在】）：
 #     - 把 dts 放进 target/linux/sunxi/files-6.12/... （内核源码覆盖层）
 #     - 在 image/cortexa7.mk 注册 Device/inphic_mars-a31s
+#     - 把 mac80211 构建补丁铺进 package/kernel/mac80211/patches/build/
+#       （写的是仓库 B 源码树，不是 build_dir，见第 4b 步）
 #   本脚本做不了的：
 #     - 往内核 dts 目录 Makefile 插 dtb-y。原因：本步早于内核解压，
 #       实测 KDIR=空，sed 必然跳过。已移到 yml 的
@@ -47,6 +49,7 @@
 # ------------------------------------------------------------------------------
 # 【维护约定】
 #   * DTS 唯一正本 = 本仓库 dts/sun6i-a31s-mars-a31s.dts，改 DTS 只改它。
+#   * mac80211 补丁唯一正本 = 本仓库 patches/999-*.patch，脚本只搬运不生成。
 #   * 一次只改一个变量。红了一次只回头动一处。
 #   * 新增外设节点前，先用原厂 b_nandc.bin 扒 DTB 对照，别猜。
 # =============================================================================
@@ -151,6 +154,56 @@ fi
 #    —— 不要再往本脚本里加这段，时机问题无解。
 # ─────────────────────────────────────────────────────────────────────────────
 echo "[diy-part2] 第 4 步（dtb-y 插入）已移交 yml 的 Inject step，本脚本不处理。"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4b) 把 mac80211 构建补丁铺进仓库 B 的源码树（patches/build/ 子目录）
+#
+#     ★ 这一段不是第 4 步那个 dtb-y：写的是【clone 出来的源码树】，
+#       build_dir 还没解压也能写；dtb-y 写的是解压后的内核树，两者不冲突。
+#
+#     正本   : 仓库 A 的 patches/999-*.patch（补丁正文由仓库 A 提供，
+#              本脚本只负责搬运，不生成、不拼接补丁内容）
+#     落点   : package/kernel/mac80211/patches/build/
+#     机制   : lede master 的 mac80211/Makefile 在 CONFIG_LINUX_6_12=y 时
+#              PKG_VERSION:=6.18.39 / PATCH_DIR:=./patches；
+#              Build/Patch 第 400 行
+#                $(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/build,build/)
+#              → 该目录补丁在 backports 解压后自动应用。
+#              不用改 yml、不用新增 step、不碰 build_dir。
+#     编号   : 999- 排现有 23 个补丁（最大 502）之后，最后应用不被覆盖，
+#              避开 500 段，将来同步上游不撞名。
+#
+#     ★ set -e 下：正本缺失 / 落地为空 一律早失败，
+#       不制造"以为铺了其实没铺"的假绿（与第 1 步 DTS 同纪律）。
+#       用 999-*.patch 通配，补丁具体文件名由下一步定，本脚本不写死。
+# ─────────────────────────────────────────────────────────────────────────────
+PATCH_SRC_DIR="$SCRIPT_DIR/patches"
+PATCH_DST_DIR="package/kernel/mac80211/patches/build"
+
+shopt -s nullglob
+PATCH_FILES=( "$PATCH_SRC_DIR"/999-*.patch )
+shopt -u nullglob
+
+if [ "${#PATCH_FILES[@]}" -eq 0 ]; then
+    echo "[diy-part2] 错误：仓库 A 缺少补丁正本 $PATCH_SRC_DIR/999-*.patch"
+    echo "[diy-part2]       补丁正文由仓库 A 的 patches/ 目录提供，本脚本只搬运。"
+    echo "[diy-part2]       请确认 patches/999-*.patch 已提交后再跑 workflow。"
+    exit 1
+fi
+
+mkdir -p "$PATCH_DST_DIR"
+for f in "${PATCH_FILES[@]}"; do
+    base="$(basename "$f")"
+    cp -f "$f" "$PATCH_DST_DIR/$base"
+    [ -s "$PATCH_DST_DIR/$base" ] || {
+        echo "[diy-part2] 错误：补丁落地为空 $PATCH_DST_DIR/$base"; exit 1;
+    }
+    echo "[diy-part2] mac80211 补丁已铺入 -> $PATCH_DST_DIR/$base ($(stat -c%s "$PATCH_DST_DIR/$base") bytes)"
+done
+
+echo "[diy-part2] ---- 仓库B 的 patches/build/ 999 段 ----"
+ls -l "$PATCH_DST_DIR"/999-*.patch
+echo "[diy-part2] ---- 编译阶段请在日志确认 backports 应用了 999 段补丁 ----"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5) 自检：把前置条件打进 CI 日志
