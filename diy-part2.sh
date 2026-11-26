@@ -206,6 +206,34 @@ ls -l "$PATCH_DST_DIR"/999-*.patch
 echo "[diy-part2] ---- 编译阶段请在日志确认 backports 应用了 999 段补丁 ----"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 4c) 把【内核补丁】搬进仓库 B 的 target/linux/sunxi/patches-6.12/
+#
+#     时机：本步在 clone 之后、make target/linux/prepare 之前运行；
+#           patches-6.12 会在 prepare 时由 PatchDir 应用到解压后的内核源码。
+#           这个目录是 lede 源码树自带的，不是 build_dir，时序不会踩
+#           "往还没铺出来的内核树里插东西"那个老坑。
+#
+#     正本在仓库 A 的 kernel-patches/，用通配不写死补丁名。
+#     缺正本 / 落地为空一律早失败（set -e），避免"以为铺了"的假绿。
+#     不覆盖 lede 自带的 12 个补丁（本补丁编号 999，现有最大 461）。
+# ─────────────────────────────────────────────────────────────────────────────
+KPATCH_SRC_DIR="$SCRIPT_DIR/kernel-patches"
+KPATCH_DST_DIR="target/linux/sunxi/patches-6.12"
+
+if ls "$KPATCH_SRC_DIR"/*.patch >/dev/null 2>&1; then
+    mkdir -p "$KPATCH_DST_DIR"
+    cp -f "$KPATCH_SRC_DIR"/*.patch "$KPATCH_DST_DIR/"
+    echo "[diy-part2] 内核补丁已铺入 -> $PWD/$KPATCH_DST_DIR"
+    for f in "$KPATCH_DST_DIR"/*.patch; do
+        [ -s "$f" ] || { echo "[diy-part2] 错误：补丁落地为空 $f"; exit 1; }
+        echo "[diy-part2]   $(basename "$f")  $(wc -c < "$f") bytes"
+    done
+else
+    echo "[diy-part2] 错误：仓库 A 找不到 kernel-patches/*.patch ($KPATCH_SRC_DIR)"
+    exit 1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5) 自检：把前置条件打进 CI 日志
 #    ★ 本步骤运行在 make 之前，内核树不存在、dtb 没有是正常的。
 #      真正判据在编译阶段日志（见下方 echo）。
