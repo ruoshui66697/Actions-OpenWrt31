@@ -1,0 +1,25 @@
+i2c: mv64xxx: enable the reset delay errata on Allwinner A31
+
+The sun6i-a31-i2c compatible sets irq_clear_inverted because its
+INT_FLAG bit is write-1-to-clear, but mv64xxx_of_config() never sets
+errata_delay for it.  With runtime PM support mv64xxx_i2c_hw_init()
+resets the bus before every transfer, and the missing 5 us delay after
+that reset leaves the controller stuck: every subsequent xfer reports
+"I2C bus locked, block: 1, time_left: 0".  Apply the same errata delay
+that is already enabled for the Marvell mv78230 variants.
+
+--- a/drivers/i2c/busses/i2c-mv64xxx.c
++++ b/drivers/i2c/busses/i2c-mv64xxx.c
+@@ -920,8 +920,10 @@
+ 			drv_data->errata_delay = true;
+ 	}
+ 
+-	if (of_device_is_compatible(np, "allwinner,sun6i-a31-i2c"))
+-		drv_data->irq_clear_inverted = true;
++	if (of_device_is_compatible(np, "allwinner,sun6i-a31-i2c")) {
++		drv_data->irq_clear_inverted = true;
++		drv_data->errata_delay = true;
++	}
+ 
+ out:
+ 	return rc;
