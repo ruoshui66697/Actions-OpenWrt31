@@ -1,15 +1,23 @@
-net: phylink: add phylink_prepare_resume() and call it in stmmac open
+net: phylink: add phylink_prepare_resume() with RXC settling delay
 
 Backport of the upstream phylink_prepare_resume() helper and the
-__stmmac_open() fix into 6.12.  stmmac always requires a running RX clock
-for the DMA software reset done by stmmac_hw_setup(), but phylink_start()
-(which resumes a suspended PHY) is called only after hardware setup.
-When the interface is reopened the PHY is left suspended, so the SWR poll
-times out with "Failed to reset the dma".
+__stmmac_open() fix into 6.12, extended with a 500ms settling delay.
 
-Resume a suspended PHY before stmmac_hw_setup().  Only the __stmmac_open()
-path is changed; stmmac_resume() is untouched because this board does not
-use system suspend/resume.
+On 6.12, stmmac_release() calls phylink_disconnect_phy() ->
+phy_disconnect() -> phy_detach() -> phy_suspend(), which for a Generic
+PHY writes BMCR_PDOWN (bit 11). The PHY then stops its receive clock.
+On the next open the PHY is re-attached with phydev->suspended still
+set, and stmmac_hw_setup() performs the DMA software reset before
+phylink_start() resumes the PHY. dwmac_dma_reset() only polls the SWR
+bit for 200ms, while 802.3 allows PHYs up to 500ms to restore a valid
+receive clock after PDOWN is cleared.
+
+Resume the suspended PHY before stmmac_hw_setup() and wait 500ms for
+RXC to become stable. The delay is applied only when a resume actually
+took place, so the first open (PHY left running by U-Boot) is unaffected.
+
+Only the __stmmac_open() path is changed; stmmac_resume() is untouched
+because this board does not use system suspend/resume.
 
 --- a/include/linux/phylink.h
 +++ b/include/linux/phylink.h
@@ -23,7 +31,15 @@ use system suspend/resume.
  void phylink_ethtool_get_wol(struct phylink *, struct ethtool_wolinfo *);
 --- a/drivers/net/phy/phylink.c
 +++ b/drivers/net/phy/phylink.c
-@@ -2354,6 +2354,31 @@
+@@ -6,6 +6,7 @@
+  * Copyright (C) 2015 Russell King
+  */
+ #include <linux/acpi.h>
++#include <linux/delay.h>
+ #include <linux/ethtool.h>
+ #include <linux/export.h>
+ #include <linux/gpio/consumer.h>
+@@ -2354,6 +2355,39 @@
  EXPORT_SYMBOL_GPL(phylink_suspend);
  
  /**
@@ -43,11 +59,19 @@ use system suspend/resume.
 +	/* IEEE 802.3 22.2.4.1.5 allows PHYs to stop their receive clock
 +	 * when PDOWN is set. However, some MACs require RXC to be running
 +	 * in order to resume. If the MAC requires RXC, and we have a PHY,
-+	 * then resume the PHY. Note that 802.3 allows PHYs 500ms before
-+	 * the clock meets requirements. We do not implement this delay.
++	 * then resume the PHY.
 +	 */
-+	if (pl->config->mac_requires_rxc && phydev && phydev->suspended)
++	if (pl->config->mac_requires_rxc && phydev && phydev->suspended) {
 +		phy_resume(phydev);
++
++		/* 802.3 allows PHYs up to 500ms before the receive clock
++		 * meets its requirements after PDOWN is cleared. Stmmac
++		 * performs its DMA software reset in stmmac_hw_setup(),
++		 * which only polls the SWR bit for 200ms. Give the PHY
++		 * time to restore RXC before the MAC starts that reset.
++		 */
++		msleep(500);
++	}
 +}
 +EXPORT_SYMBOL_GPL(phylink_prepare_resume);
 +
@@ -57,11 +81,10 @@ use system suspend/resume.
   *
 --- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
 +++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
-@@ -3947,6 +3947,15 @@
- 			goto init_error;
+@@ -3948,6 +3948,15 @@
  		}
  	}
-+
+ 
 +	/* The PHY is suspended when the interface is reopened without
 +	 * disconnecting the PHY, e.g. on MTU change. IEEE 802.3 allows PHYs
 +	 * to stop their receive clock while powered down, but the DMA
@@ -70,6 +93,7 @@ use system suspend/resume.
 +	 * hardware setup. Resume a suspended PHY here first.
 +	 */
 +	phylink_prepare_resume(priv->phylink);
- 
++
  	ret = stmmac_hw_setup(dev, true);
  	if (ret < 0) {
+ 		netdev_err(priv->dev, "%s: Hw setup failed\n", __func__);
