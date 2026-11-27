@@ -689,3 +689,46 @@
  *   （PHYID 0x02430C54 / BMCR 3100 / BMSR 786D / reg16 0000）
  *   与本轮 fdt hash 一起记，别和 r8359 / 回退轮混用。
  */
+/*
+ * AXP221S PMIC + ALDO1 (vcc-wifi) for the on-board USB RTL8188EU.
+ * Source: factory script.bin, [wifi_para] wifi_mod_sel=6 (rtl8188eu, USB),
+ *         wifi_power="axp22_aldo1"; [pmu_para] pmu_twi_id=1, addr=0x34.
+ * Keep every other rail at boot state so DLDO1 (gmac PHY) is not switched off.
+ */
+
+&i2c1 {
+	status = "okay";
+
+	axp22x: pmic@34 {
+		compatible = "x-powers,axp221";	/* AXP221S is axp221 compatible */
+		reg = <0x34>;
+	};
+};
+
+#include "axp22x.dtsi"
+
+/* vcc-wifi: USB RTL8188EU module power */
+&reg_aldo1 {
+	regulator-always-on;
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-name = "vcc-wifi";
+};
+
+/* Preserve boot0/U-Boot voltage on all other rails; no override. */
+&reg_dcdc1  { regulator-always-on; };
+&reg_dcdc2  { regulator-always-on; };
+&reg_dcdc3  { regulator-always-on; };
+&reg_dcdc4  { regulator-always-on; };
+&reg_dcdc5  { regulator-always-on; };
+&reg_dc1sw  { regulator-always-on; };
+&reg_dc5ldo { regulator-always-on; };
+&reg_aldo2  { regulator-always-on; };
+&reg_aldo3  { regulator-always-on; };
+&reg_dldo1  { regulator-always-on; };	/* gmac PHY, fex gmac_power */
+&reg_dldo2  { regulator-always-on; };
+&reg_dldo3  { regulator-always-on; };
+&reg_dldo4  { regulator-always-on; };
+&reg_eldo1  { regulator-always-on; };
+&reg_eldo2  { regulator-always-on; };
+&reg_eldo3  { regulator-always-on; };
