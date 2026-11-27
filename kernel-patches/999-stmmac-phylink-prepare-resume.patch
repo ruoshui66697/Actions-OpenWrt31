@@ -18,29 +18,71 @@
  #include <linux/ethtool.h>
  #include <linux/export.h>
  #include <linux/gpio/consumer.h>
-@@ -2354,6 +2355,29 @@
+@@ -2354,6 +2355,71 @@
  EXPORT_SYMBOL_GPL(phylink_suspend);
  
  /**
-+ * phylink_prepare_resume() - prepare to resume a network device
++ * phylink_prepare_resume() - bring a re-attached PHY up before MAC setup
 + * @pl: a pointer to a &struct phylink returned from phylink_create()
 + *
-+ * Optional, but if called must be called prior to phylink_start().
++ * Optional, but if called must be called after the PHY has been attached
++ * and before the MAC performs its DMA software reset.
 + *
-+ * stmmac re-attaches the PHY in stmmac_init_phy() before this hook runs,
-+ * and phy_attach_direct() has already resumed it, so BMCR_PDOWN is clear
-+ * by the time we get here. IEEE 802.3 22.2.4.1.5 nevertheless
-+ * allows a PHY up to 500ms for its receive clock to meet the spec after
-+ * PDOWN is cleared. stmmac_hw_setup() polls the DMA software-reset bit
-+ * for only 200ms and runs before phylink_start(), so wait here with no
-+ * runtime condition that the preceding attach may have invalidated.
++ * On a MAC which takes its MII clock from the PHY, DMA_MODE.SWR only
++ * self-clears once that clock is running. stmmac re-attaches the PHY in
++ * stmmac_init_phy(), and phy_attach_direct() clears BMCR_PDOWN, but
++ * autonegotiation is normally restarted only by phylink_start(), which
++ * runs after stmmac_hw_setup(). On an interface reopen the PHY is left
++ * at its reset defaults (no link), so the clock never comes back and the
++ * DMA reset times out. Restart AN and wait for the link here instead.
++ * A link already established (e.g. handed over by a bootloader) is left
++ * alone: its clock is running and renegotiating it would be harmful.
 + */
 +void phylink_prepare_resume(struct phylink *pl)
 +{
-+	ASSERT_RTNL();
-+	(void)pl;
++	struct phy_device *phydev = pl->phydev;
++	int bmsr, ret, i;
 +
-+	msleep(500);
++	ASSERT_RTNL();
++
++	if (!phydev)
++		return;
++
++	bmsr = phy_read(phydev, MII_BMSR);
++	if (bmsr < 0 || bmsr == 0xffff) {
++		phylink_warn(pl, "cannot read MII_BMSR (%d)\n", bmsr);
++		return;
++	}
++
++	if (bmsr & BMSR_LSTATUS)
++		return;
++
++	ret = phy_restart_aneg(phydev);
++	if (ret < 0) {
++		phylink_warn(pl, "cannot restart autonegotiation (%d)\n", ret);
++		return;
++	}
++
++	/* BMSR link status is latch-low: read repeatedly so that the first
++	 * (stale) low value is consumed. 60 x 50ms = 3s is ample for
++	 * 802.3 autonegotiation to complete. On timeout we only warn and
++	 * let the normal MAC setup path run, keeping the failure shape
++	 * comparable with an unpatched kernel.
++	 */
++	for (i = 0; i < 60; i++) {
++		msleep(50);
++		bmsr = phy_read(phydev, MII_BMSR);
++		if (bmsr < 0)
++			break;
++		if (bmsr & BMSR_LSTATUS) {
++			phylink_info(pl, "PHY link up after %d ms (BMSR=0x%04x)\n",
++				     (i + 1) * 50, bmsr);
++			return;
++		}
++	}
++
++	phylink_warn(pl, "PHY link still down after AN restart (BMSR=0x%04x)\n",
++		     bmsr);
 +}
 +EXPORT_SYMBOL_GPL(phylink_prepare_resume);
 +
@@ -50,16 +92,15 @@
   *
 --- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
 +++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
-@@ -3948,6 +3948,15 @@
+@@ -3948,6 +3948,14 @@
  		}
  	}
  
-+	/* stmmac_init_phy() has already re-attached and resumed the PHY
-+	 * (BMCR_PDOWN clear) before this point. IEEE 802.3 allows the PHY
-+	 * up to 500ms to restore its receive clock, but the DMA software
-+	 * reset in stmmac_hw_setup() polls SWR for only 200ms, and
-+	 * phylink_start() runs only afterwards. Wait here, before the MAC
-+	 * starts that reset, so RXC has time to become stable.
++	/* stmmac_init_phy() has re-attached the PHY (BMCR_PDOWN clear),
++	 * but phylink_start() - which restarts autonegotiation and brings
++	 * the link up - only runs after stmmac_hw_setup(). In MII mode the
++	 * MAC takes its clock from the PHY, so DMA_MODE.SWR in hw_setup()
++	 * cannot self-clear until that link is up. Bring it up here first.
 +	 */
 +	phylink_prepare_resume(priv->phylink);
 +
