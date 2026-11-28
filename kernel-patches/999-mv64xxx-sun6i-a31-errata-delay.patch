@@ -1,12 +1,15 @@
-i2c: mv64xxx: enable the reset delay errata on Allwinner A31
+i2c: mv64xxx: A31 - keep errata delay, no autosuspend between transfers
 
-The sun6i-a31-i2c compatible sets irq_clear_inverted because its
-INT_FLAG bit is write-1-to-clear, but mv64xxx_of_config() never sets
-errata_delay for it.  With runtime PM support mv64xxx_i2c_hw_init()
-resets the bus before every transfer, and the missing 5 us delay after
-that reset leaves the controller stuck: every subsequent xfer reports
-"I2C bus locked, block: 1, time_left: 0".  Apply the same errata delay
-that is already enabled for the Marvell mv78230 variants.
+The sun6i-a31-i2c compatible sets irq_clear_inverted, but not
+errata_delay.  Without it the controller can lock up after the
+reset done in mv64xxx_i2c_hw_init().  Enable the same errata delay
+that Marvell mv78230 variants use.
+
+Runtime PM autosuspend resets the controller one second after each
+transfer; on A31 the bus does not come back cleanly after that reset
+and every later xfer reports
+"I2C bus locked, block: 1, time_left: 0".  Keep the controller on
+between transfers for this compatible.
 
 --- a/drivers/i2c/busses/i2c-mv64xxx.c
 +++ b/drivers/i2c/busses/i2c-mv64xxx.c
@@ -23,3 +26,16 @@ that is already enabled for the Marvell mv78230 variants.
  
  out:
  	return rc;
+@@ -1049,8 +1051,11 @@
+ 	platform_set_drvdata(pd, drv_data);
+ 	i2c_set_adapdata(&drv_data->adapter, drv_data);
+ 
+ 	pm_runtime_set_autosuspend_delay(&pd->dev, MSEC_PER_SEC);
+-	pm_runtime_use_autosuspend(&pd->dev);
++	/* A31: do not reset the controller between transfers */
++	if (!of_device_is_compatible(pd->dev.of_node,
++				     "allwinner,sun6i-a31-i2c"))
++		pm_runtime_use_autosuspend(&pd->dev);
+ 	pm_runtime_enable(&pd->dev);
+ 	if (!pm_runtime_enabled(&pd->dev)) {
+ 		rc = mv64xxx_i2c_runtime_resume(&pd->dev);
