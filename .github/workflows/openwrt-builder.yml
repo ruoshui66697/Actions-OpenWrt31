@@ -153,14 +153,56 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
 
+    # =========================================================================
+    # ★ B 版：只改这一个 step（Download package），其余全文逐字未动。
+    # -------------------------------------------------------------------------
+    # 起因：三层 feeds 兜底只管「feeds 目录齐不齐」，管不到 make download
+    #       挂着不返回。上一轮 6h0m19s 触发 job 级 360 分钟上限，平台
+    #       取消 job，终态 cancelled，!cancelled() 尾巴整串跳过、钉钉静默。
+    #
+    # 四件事：
+    #   1) step 级 timeout-minutes: 40 —— 远小于 360，卡住就在 40 分钟内
+    #      带 step 失败结束，job=failure（不是 cancelled），钉钉才会响；
+    #   2) tee 留 make_download.log —— 卡在哪个包有逐字回显可查；
+    #   3) grep 'ERROR:' → 二轮 make download -j1 V=s 单线程重试；
+    #   4) 二轮用独立日志 make_download_retry.log —— 否则首轮残留的
+    #      ERROR 会让「二轮后仍有 ERROR」永远为真，误报硬失败。
+    #
+    # 为什么靠 grep 判、不靠 $?：make | tee 是管道，退出码是 tee 的，
+    #   make 失败也返回 0；判据必须落在日志文本上（同 Update feeds 的
+    #   「退出码仅参考，以目录校验为准」）。
+    #   set +e 同理：grep 无匹配返回 1，别让默认 -e 把 step 打死。
+    #
+    # 不动：make defconfig 仍按原版不判；末尾 find 清 <1KB 残件照旧；
+    #       钉钉 if / Prepare / Inject / Compile / Collect 全部未改（A 留下一轮）。
+    # =========================================================================
     - name: Download package
       id: package
+      timeout-minutes: 40
       run: |
+        set +e   # 与 Update feeds 一致：重试链自己判，靠日志文本不靠退出码
         cd openwrt
         make defconfig
-        make download -j8
+        make download -j8 2>&1 | tee make_download.log
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
+
+        if grep -q 'ERROR:' make_download.log; then
+          echo "[download] ⚠️ 首轮有 ERROR，二轮单线程重试"
+          grep 'ERROR:' make_download.log
+          make download -j1 V=s 2>&1 | tee make_download_retry.log
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+          if grep -q 'ERROR:' make_download_retry.log; then
+            echo "[download] ❌ 二轮仍有 ERROR，硬失败在这里"
+            grep 'ERROR:' make_download_retry.log
+            exit 1
+          fi
+          echo "[download] ✅ 二轮补齐，无 ERROR"
+        else
+          echo "[download] ✅ 首轮下载完成，无 ERROR"
+        fi
+        exit 0
 
     # =========================================================================
     # ★ 新增 step：Prepare kernel tree
