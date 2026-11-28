@@ -698,6 +698,7 @@
 
 &i2c1 {
 	status = "okay";
+    clock-frequency = <400000>;
 
 	axp22x: pmic@34 {
 		compatible = "x-powers,axp221";	/* AXP221S is axp221 compatible */
